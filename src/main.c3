@@ -60,12 +60,25 @@ fn void? Topology.diff(&self, Topology other, Options opts)
     io::printfn("%s %s %s", "REMOVED".bg(color::RED).fg(color::BLACK), "ADDED".bg(color::GREEN).fg(color::BLACK), "CHANGED".bg(color::PINK).fg(color::BLACK));
 
     usz name_len_max;
-    foreach(key: self.nodes.tkeys()) {
+    self.nodes.@each(; String key, Node* node) {
+        if (key.len > name_len_max) {
+            if (opts.show_all) {
+                name_len_max = key.len;
+            } else if (node.is_stateful()) {
+                name_len_max = key.len;
+            }
+        }
+    };
+    other.nodes.@each(; String key, Node* node) {
+        if (key.len > name_len_max) {
+            if (opts.show_all) {
+                name_len_max = key.len;
+            } else if (node.is_stateful()) {
+                name_len_max = key.len;
+            }
+        }
         if (key.len > name_len_max) name_len_max = key.len;
-    }
-    foreach(key: other.nodes.tkeys()) {
-        if (key.len > name_len_max) name_len_max = key.len;
-    }
+    };
     name_len_max += 5;
 
     Node*[] nodes = self.nodes.tvalues();
