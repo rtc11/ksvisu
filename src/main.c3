@@ -5,6 +5,45 @@ import std::collections::map;
 import std::collections::list;
 import ksvisu::color;
 
+faultdef ILLEGAL_ARG, NOT_FOUND, MULTIPLE_STATE_STORES;
+
+struct Options
+{
+    bool show_all;
+    bool diff;
+    bool gui;
+    String topo_path;
+    String topo_path_diff;
+}
+
+struct Topology {
+    HashMap{String, Node*} nodes;
+    Allocator alloc;
+}
+
+struct Node
+{
+    int sub_topology;
+    String name;
+    Kind kind;
+    List{String} topics;
+    List{String} stores;
+    List{String} downstream;
+    List{String} upstream;
+    // GUI fields
+    int layer; 
+    int x;
+    int y;
+    float barycenter;
+}
+
+enum Kind
+{
+    SOURCE,
+    PROCESSOR,
+    SINK
+}
+
 fn void main(String[] args)
 {
     @pool() 
@@ -30,17 +69,6 @@ fn void main(String[] args)
         }
     };
 }
-
-struct Options
-{
-    bool show_all;
-    bool diff;
-    bool gui;
-    String topo_path;
-    String topo_path_diff;
-}
-
-faultdef ILLEGAL_ARG, NOT_FOUND, MULTIPLE_STATE_STORES;
 
 fn Options? cli(String[] args)
 {
@@ -184,31 +212,6 @@ fn void Topology.parse_desc(&self, String[] input)
     }
 }
 
-struct Topology {
-    HashMap{String, Node*} nodes;
-    Allocator alloc;
-}
-
-struct Node
-{
-    int sub_topology;
-    String name;
-    Kind kind;
-    List{String} topics;
-    List{String} stores;
-    List{String} downstream;
-    List{String} upstream;
-    int layer; 
-    int x;
-    int y;
-}
-
-enum Kind
-{
-    SOURCE,
-    PROCESSOR,
-    SINK
-}
 
 fn bool Node.is_stateful(&self) => self.stores.len() > 0;
 fn bool Node.has_topics(&self) => self.topics.len() > 0;

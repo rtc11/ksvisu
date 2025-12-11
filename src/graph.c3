@@ -366,13 +366,32 @@ fn NodesByLayer calculate_positions(State* state)
         float calculated_step = DRAW_WIDTH / (float) state.max_layer;
 
         layer_step_size = math::max(calculated_step, required_min_step);
-        // layer_step_size = DRAW_WIDTH / (float)state.max_layer;
     } else {
         layer_step_size = DRAW_WIDTH;
     }
 
     for (int i; i <= state.max_layer; i++) {
         Nodes layer_nodes = layers[i];
+
+        // Edge crossing minimization (barycenter)
+        if (i > 0) {
+            Nodes prev_layer_nodes = layers[(usz)i-1];
+            foreach(node: layer_nodes) {
+                float total_y;
+                usz count;
+                foreach(usname: node.upstream) {
+                    Node*? us = state.topo.nodes.get(usname);
+                    if (catch us) continue;
+                    if (us.layer == (i - 1)) {
+                        total_y += (float) us.y;
+                        count++;
+                    }
+                }
+                node.barycenter = (count > 0) ? (total_y / (float) count) : node.y;
+            }
+            quicksort(&layer_nodes, &cmp_barycenter);
+        }
+
         float layer_pos_x = (float)MARGIN + (float)i * layer_step_size;
         if (state.max_layer == 0) layer_pos_x = MARGIN + DRAW_WIDTH / 2f;
         usz total_vertical_space = layer_nodes.len() * NODE_VERTICAL_STEP - NODE_PADDING;
@@ -386,5 +405,11 @@ fn NodesByLayer calculate_positions(State* state)
         }
     }
     return layers;
+}
+
+fn int cmp_barycenter(Node* a, Node* b) {
+    if (a.barycenter < b.barycenter) return -1;
+    if (a.barycenter > b.barycenter) return 1;
+    return 0;
 }
 
