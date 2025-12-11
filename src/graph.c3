@@ -69,9 +69,9 @@ fn void visualize(Topology topo)
     };
 
     Fonts fonts = { 
-        .regular = rl::loadFont("resources/JetBrainsMono-Regular.ttf"),
-        .thin = rl::loadFont("resources/JetBrainsMonoNL-Thin.ttf"),
-        .bold = rl::loadFont("resources/JetBrainsMono-Bold.ttf"),
+        .regular = rl::loadFont("/Users/Robin.Tordly/code/c3/ksvisu/resources/JetBrainsMono-Regular.ttf"),
+        .thin = rl::loadFont("/Users/Robin.Tordly/code/c3/ksvisu/resources/JetBrainsMonoNL-Thin.ttf"),
+        .bold = rl::loadFont("/Users/Robin.Tordly/code/c3/ksvisu/resources/JetBrainsMono-Bold.ttf"),
     };
 
     State state = { 
@@ -171,13 +171,20 @@ fn void State.setup_sub_topology_buttons(&self, Topology topo)
 
         Toggle* toggle = allocator::new(tmem, Toggle, { 
             .id = node.sub_topology,
-            .label = string::tformat_zstr("%d", node.sub_topology) }
-        );
-        if (sub_id == 3) toggle.enabled = true;
-        // toggle.enabled = true;
+            .label = string::tformat_zstr("%d", node.sub_topology), 
+        });
+        // if (sub_id == 3) toggle.enabled = true;
+        toggle.enabled = true;
         self.toggles.push(toggle);
         quicksort(&self.toggles);
     }
+
+    Toggle* all = allocator::new(tmem, Toggle, { 
+        .id = 1000,
+        .label = "ALL".zstr_tcopy(),
+        .enabled = true,
+    });
+    self.toggles.push(all);
 
     const float BUTTON_WIDTH = 60;
     const float BUTTON_HEIGHT = 30;
@@ -192,17 +199,40 @@ fn void State.setup_sub_topology_buttons(&self, Topology topo)
 
 fn void draw_topology_toggles(State* state)
 {
+    // Toggle* all = state.toggles.last()!!;
+    // if (rl::checkCollisionPointRec(rl::getMousePosition(), all.button) && rl::isMouseButtonPressed(LEFT)) {
+    //     all.enabled = !all.enabled;
+    //     state.recalculate_layout = true;
+    //
+    //     rl::drawRectangleRec(all.button, all.enabled ? GREEN : RED);
+    //     rl::drawTextEx(state.fonts.bold, all.label, {all.button.x + 20, all.button.y + 5}, 20, 4f, rl::BLACK);
+    //     rl::drawRectangleLinesEx(all.button, 1, rl::DARKGRAY);
+    //
+    //     foreach(toggle: state.toggles) {
+    //         toggle.enabled = all.enabled;
+    //     }
+    // }
+
+    Toggle* all = state.toggles.last()!!;
+    bool all_toggeled;
+    if (rl::checkCollisionPointRec(rl::getMousePosition(), all.button) && rl::isMouseButtonPressed(LEFT)) {
+        all_toggeled = true;
+        all.enabled = !all.enabled;
+        state.recalculate_layout = true;
+    }
+
+
     foreach(toggle: state.toggles) {
-        if (rl::checkCollisionPointRec(rl::getMousePosition(), toggle.button)) {
+        if (rl::checkCollisionPointRec(rl::getMousePosition(), toggle.button) && toggle.id != 1000) {
             if (rl::isMouseButtonPressed(LEFT)) {
                 toggle.enabled = !toggle.enabled;
                 state.recalculate_layout = true;
             }
+        } else if (all_toggeled) {
+            toggle.enabled = all.enabled;
         }
 
-        rl::Color but_color = toggle.enabled ? GREEN : RED;
-        rl::Color color = toggle.enabled ? GREEN : RED;
-        rl::drawRectangleRec(toggle.button, but_color);
+        rl::drawRectangleRec(toggle.button, toggle.enabled ? GREEN : RED);
         rl::drawTextEx(state.fonts.bold, toggle.label, {toggle.button.x + 20, toggle.button.y + 5}, 20, 4f, rl::BLACK);
         rl::drawRectangleLinesEx(toggle.button, 1, rl::DARKGRAY);
     }
@@ -267,6 +297,16 @@ fn void Node.draw(&self, State* state)
         3f,
         rl::WHITE,
     );
+    if (self.kind == PROCESSOR && self.is_stateful()) {
+        rl::drawTextEx(
+            state.fonts.thin,
+            self.stores[0].zstr_tcopy(),
+            { self.x - (text_width / 2f), (float)self.y + NODE_RADIUS + font_size },
+            (float) font_size,
+            3f,
+            rl::WHITE,
+        );
+    }
 }
 
 fn void Node.connect(&self, Node other)

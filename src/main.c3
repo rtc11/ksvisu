@@ -37,6 +37,11 @@ struct Node
     float barycenter;
 }
 
+fn bool Node.is_stateful(&self) => self.stores.len() > 0;
+fn bool Node.has_topics(&self) => self.topics.len() > 0;
+fn bool Node.has_downstreams(&self) => self.downstream.len() > 0;
+fn bool Node.has_upstreams(&self) => self.upstream.len() > 0;
+
 enum Kind
 {
     SOURCE,
@@ -211,12 +216,6 @@ fn void Topology.parse_desc(&self, String[] input)
         }
     }
 }
-
-
-fn bool Node.is_stateful(&self) => self.stores.len() > 0;
-fn bool Node.has_topics(&self) => self.topics.len() > 0;
-fn bool Node.has_downstreams(&self) => self.downstream.len() > 0;
-fn bool Node.has_upstreams(&self) => self.upstream.len() > 0;
 
 fn void Topology.parse_sub(&self, int id, String[] input, int* offset)
 {
