@@ -10,8 +10,10 @@
   "build-dir": "build",
   "output": "build",
   "targets": {
-    "ksvisu": {
-      "type": "executable"
+    "macos-aarch64": {
+      "type": "executable",
+      "macos-min-version": "15.0",
+      "macos-sdk-version": "15.0"
     }
   },
   "cpu": "generic",

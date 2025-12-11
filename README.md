@@ -13,3 +13,6 @@ Diff between old and new stateful processor nodes:
 Diff between all old and new nodes:
 > ksvisu old.desc -d new.desc -a
 
+Open GUI:
+> ksvisu topology.desc -g
+

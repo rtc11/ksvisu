@@ -15,6 +15,10 @@ fn void main(String[] args)
         Topology topology = { .alloc = tmem };
         topology.parse_desc(a);
 
+        if (opts.gui) {
+            visualize(topology);
+            return;
+        } 
         switch (opts.diff) {
             case true: 
                 String[] b = ((String)file::load(tmem, opts.topo_path_diff)!!).tsplit("\n");
@@ -31,6 +35,7 @@ struct Options
 {
     bool show_all;
     bool diff;
+    bool gui;
     String topo_path;
     String topo_path_diff;
 }
@@ -52,6 +57,9 @@ fn Options? cli(String[] args)
             opts.diff = true; 
             opts.topo_path_diff = args[args.index_at("-d")!! + 1]; 
         } 
+        if (args.contains("-g")) {
+            opts.gui = true;
+        }
     return opts;
 }
 
