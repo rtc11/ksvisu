@@ -197,22 +197,9 @@ fn void State.setup_sub_topology_buttons(&self, Topology topo)
     }
 }
 
+// TODO: add debounce to state, and update debounce counter to improve mouse click response 
 fn void draw_topology_toggles(State* state)
 {
-    // Toggle* all = state.toggles.last()!!;
-    // if (rl::checkCollisionPointRec(rl::getMousePosition(), all.button) && rl::isMouseButtonPressed(LEFT)) {
-    //     all.enabled = !all.enabled;
-    //     state.recalculate_layout = true;
-    //
-    //     rl::drawRectangleRec(all.button, all.enabled ? GREEN : RED);
-    //     rl::drawTextEx(state.fonts.bold, all.label, {all.button.x + 20, all.button.y + 5}, 20, 4f, rl::BLACK);
-    //     rl::drawRectangleLinesEx(all.button, 1, rl::DARKGRAY);
-    //
-    //     foreach(toggle: state.toggles) {
-    //         toggle.enabled = all.enabled;
-    //     }
-    // }
-
     Toggle* all = state.toggles.last()!!;
     bool all_toggeled;
     if (rl::checkCollisionPointRec(rl::getMousePosition(), all.button) && rl::isMouseButtonPressed(LEFT)) {
@@ -221,17 +208,16 @@ fn void draw_topology_toggles(State* state)
         state.recalculate_layout = true;
     }
 
-
     foreach(toggle: state.toggles) {
-        if (rl::checkCollisionPointRec(rl::getMousePosition(), toggle.button) && toggle.id != 1000) {
-            if (rl::isMouseButtonPressed(LEFT)) {
-                toggle.enabled = !toggle.enabled;
-                state.recalculate_layout = true;
-            }
+        if (rl::checkCollisionPointRec(rl::getMousePosition(), toggle.button) && rl::isMouseButtonPressed(LEFT) && toggle.id != 1000) {
+            toggle.enabled = !toggle.enabled;
+            state.recalculate_layout = true;
         } else if (all_toggeled) {
             toggle.enabled = all.enabled;
         }
+    }
 
+    foreach(toggle: state.toggles) {
         rl::drawRectangleRec(toggle.button, toggle.enabled ? GREEN : RED);
         rl::drawTextEx(state.fonts.bold, toggle.label, {toggle.button.x + 20, toggle.button.y + 5}, 20, 4f, rl::BLACK);
         rl::drawRectangleLinesEx(toggle.button, 1, rl::DARKGRAY);
