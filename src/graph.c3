@@ -282,6 +282,7 @@ fn void graph(State* state)
     state.max_layer = 0;
     state.max_node_width = 0;
 
+    // initialize
     foreach(node: state.topo.nodes.tvalues()) {
         bool include;
         foreach(toggle : state.toggles) {
@@ -314,21 +315,25 @@ fn void graph(State* state)
         }
     }
 
-    // BFS - Longest path
+    // BFS - Longest path - with cycle breaking
     while (queue.len() > 0) {
         Node* cur = queue.pop()!!;
+
         if (cur.layer > state.max_layer) {
             state.max_layer = cur.layer;
         }
+
         foreach(dsname: cur.downstream) {
             Node*? ds = state.topo.nodes.get(dsname);
             if (catch ds) continue;
-            // if (ds.layer == -1) continue;
             if (ds.layer == -2) continue;
+
             int potential_layer = cur.layer + 1;
+
             if (potential_layer > ds.layer) {
                 ds.layer = potential_layer;
                 queue.push(ds);
+
                 if (ds.layer > state.max_layer) {
                     state.max_layer = ds.layer;
                 }
@@ -336,6 +341,51 @@ fn void graph(State* state)
         }
     }
 
+    // manual cycle layer adjustment start
+    Node*[] all_nodes = state.topo.nodes.tvalues(); 
+    usz max_iter = all_nodes.len * 2;
+    bool changed = true;
+    foreach (node : all_nodes) {
+        if (node.kind != SOURCE && node.layer != -2) {
+            node.layer = -1; // reset
+        }
+    }
+    int iter_count = 0;
+    while (changed && iter_count < max_iter) {
+        changed = false;
+        iter_count++;
+
+        foreach(node: all_nodes){
+            if (node.layer == -2) continue; // invisible
+            if (node.kind == SOURCE) {
+                if (node.layer != 0) {
+                    node.layer = 0;
+                    changed = true;
+                }
+                continue;
+            }
+            int max_us_layer = -1;
+            foreach(usname: node.upstream) {
+                Node*? us = state.topo.nodes.get(usname);
+                if (catch us) continue;
+                if (us.layer < 0) continue;
+                if (us.layer > max_us_layer) max_us_layer = us.layer;
+            }
+            int required_layer = max_us_layer + 1;
+            if (required_layer > node.layer) {
+                node.layer = required_layer;
+                changed = true;
+            }
+        }
+    }
+    
+    state.max_layer = 0;
+    foreach(node : all_nodes) {
+        if (node.layer > state.max_layer) {
+            state.max_layer = node.layer;
+        }
+    }
+    // manual cycle layer adjustment end
 }
 
 fn NodesByLayer calculate_positions(State* state)
