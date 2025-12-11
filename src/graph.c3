@@ -25,56 +25,65 @@ const rl::Color GOLD = { 218, 165, 35, 255};
 alias Nodes = List{Node*};
 alias NodesByLayer = List{Nodes};
 
-fn void visualize(Topology topo, int sub_topology_id = 3)
+struct Fonts {
+    Font regular;
+    Font thin;
+    Font bold;
+}
+
+fn void visualize(Topology topo)
 {
     rl::setConfigFlags(MSAA_4X_HINT);
     rl::initWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Kafka Streams Topology Visualizer");
     rl::setMouseCursor(CROSSHAIR);
 
+    const float DRAW_WIDTH = SCREEN_WIDTH - (2f * MARGIN);
+    const float DRAW_HEIGHT = SCREEN_HEIGHT - (2f * MARGIN);
     Camera2D camera = {
         .offset = { SCREEN_WIDTH / 2f, SCREEN_HEIGHT / 2f },
-        .target = { SCREEN_WIDTH / 2f, SCREEN_HEIGHT / 2f },
+        .target = { MARGIN + DRAW_WIDTH / 2f, MARGIN + DRAW_HEIGHT / 2f },
         .zoom = 1f,
     };
 
-    Font font = rl::loadFont("resources/JetBrainsMonoNL-Thin.ttf");
-    if (!font.texture.id) font = rl::getFontDefault();
-
-    bool is_panning;
-    Vector2 last_mouse_pos_world;
-
-    int max_layer = graph(topo, sub_topology_id);
-    NodesByLayer layers = calculate_positions(topo, max_layer, sub_topology_id);
+    Fonts fonts = { 
+        .regular = rl::loadFont("resources/JetBrainsMono-Regular.ttf"),
+        .thin = rl::loadFont("resources/JetBrainsMonoNL-Thin.ttf"),
+        .bold = rl::loadFont("resources/JetBrainsMono-Bold.ttf"),
+    };
 
     State state = { 
         .topo = topo,
-        .font = font, 
+        .fonts = fonts, 
     };
+
     state.setup_sub_topology_buttons(topo);
+    graph(&state);
+    NodesByLayer layers = calculate_positions(state);
 
     while (!rl::windowShouldClose()) {
         if (rl::isKeyPressed(rl::KEY_ENTER)) break;
 
         camera.mouse_zoom();
-        camera.mouse_panning(&is_panning, &last_mouse_pos_world);
+        camera.mouse_panning(&state);
 
         rl::beginDrawing();
         rl::clearBackground(BG);
         rl::drawRectangleRec({MARGIN, MARGIN, SCREEN_WIDTH-(2*MARGIN), SCREEN_HEIGHT-(2*MARGIN)}, BODY);
 
         rl::beginMode2D(camera);
-        draw_subtopology(state);
+        draw_subtopology(&state);
         rl::endMode2D();
 
-        rl::drawText(string::tformat_zstr("Zoom: %.2f", camera.zoom), 10, 10, 20, rl::WHITE);
-        draw_topology_toggles(state);
+        rl::drawTextEx(state.fonts.regular, string::tformat_zstr("Zoom: %.2f", camera.zoom), {10f, 10f}, 20, 4f, rl::WHITE);
+
+        draw_topology_toggles(&state);
 
         rl::endDrawing();
     }
     rl::closeWindow();
 }
 
-fn void draw_subtopology(State state)
+fn void draw_subtopology(State* state)
 {
     foreach (node: state.topo.nodes.tvalues()) {
         bool node_is_visible;
@@ -115,7 +124,7 @@ fn void draw_subtopology(State state)
             }
         }
         if (should_draw) {
-            node.draw(state.font);
+            node.draw(state);
         }
     }
 }
@@ -137,6 +146,7 @@ fn void State.setup_sub_topology_buttons(&self, Topology topo)
             .id = node.sub_topology,
             .label = string::tformat_zstr("%d", node.sub_topology) }
         );
+        if (sub_id == 3) toggle.enabled = true;
         self.toggles.push(toggle);
         quicksort(&self.toggles);
     }
@@ -166,10 +176,13 @@ struct State
 {
     Topology topo;
     List{Toggle*} toggles;
-    Font font;
+    Fonts fonts;
+    usz max_layer;
+    bool is_panning;
+    Vector2 last_mouse_pos_world;
 }
 
-fn void draw_topology_toggles(State state)
+fn void draw_topology_toggles(State* state)
 {
     foreach(toggle: state.toggles) {
         if (rl::checkCollisionPointRec(rl::getMousePosition(), toggle.button)) {
@@ -179,12 +192,9 @@ fn void draw_topology_toggles(State state)
         }
 
         rl::Color but_color = toggle.enabled ? GREEN : RED;
-        // rl::Color txt_color = toggle.enabled ? rl::DARKGREEN : rl::MAROON;
-        rl::Color txt_color = rl::BLACK;
         rl::Color color = toggle.enabled ? GREEN : RED;
         rl::drawRectangleRec(toggle.button, but_color);
-        rl::drawText(toggle.label, (int)toggle.button.x + 10, (int)toggle.button.y + 10, 20, txt_color);
-        // rl::drawTextEx(rl::getFontDefault(), toggle.label, toggle.button.pos + 10, 16, 3f, txt_color);
+        rl::drawTextEx(state.fonts.bold, toggle.label, {toggle.button.x + 20, toggle.button.y + 5}, 20, 4f, rl::BLACK);
         rl::drawRectangleLinesEx(toggle.button, 1, rl::DARKGRAY);
     }
 }
@@ -208,25 +218,26 @@ fn void Camera2D.mouse_zoom(&self)
     }
 }
 
-fn void Camera2D.mouse_panning(&self, bool* is_panning, Vector2* last_mouse_pos_world)
+fn void Camera2D.mouse_panning(&self, State* state)
 {
     if (rl::isMouseButtonPressed(LEFT)) {
-        *is_panning = true;
-        *last_mouse_pos_world = rl::getScreenToWorld2D(rl::getMousePosition(), *self); 
+        state.is_panning = true;
+        state.last_mouse_pos_world = rl::getScreenToWorld2D(rl::getMousePosition(), *self); 
     }
     if (rl::isMouseButtonReleased(LEFT)) {
-        *is_panning = false;
+        state.is_panning = false;
     }
-    if (*is_panning) {
+    if (state.is_panning) {
         Vector2 current_mouse_pos_world = rl::getScreenToWorld2D(rl::getMousePosition(), *self);
-        float delta_x = current_mouse_pos_world.x - last_mouse_pos_world.x;
-        float delta_y = current_mouse_pos_world.y - last_mouse_pos_world.y;
+        float delta_x = current_mouse_pos_world.x - state.last_mouse_pos_world.x;
+        float delta_y = current_mouse_pos_world.y - state.last_mouse_pos_world.y;
         self.target.x -= delta_x;
         self.target.y -= delta_y;
     }
+
 }
 
-fn void Node.draw(&self, Font font, int font_size = 16)
+fn void Node.draw(&self, State* state)
 {
     rl::Color color;
     switch (self.kind) {
@@ -237,9 +248,10 @@ fn void Node.draw(&self, Font font, int font_size = 16)
     rl::drawCircle(self.x, self.y, NODE_RADIUS, color);
     rl::drawCircleLines(self.x, self.y, NODE_RADIUS, GOLD);
     ZString name = self.name.zstr_tcopy();
+    int font_size = 16;
     int text_width = rl::measureText(name, font_size);
     rl::drawTextEx(
-        font,
+        state.fonts.thin,
         name,
         { self.x - (text_width / 2f), (float)self.y + NODE_RADIUS },
         (float) font_size,
@@ -255,12 +267,19 @@ fn void Node.connect(&self, Node other)
     rl::drawLineEx(startPos, endPos, 5, GOLD);
 }
 
-fn int graph(Topology topo, int sub_topology_id = 0)
+fn void graph(State* state)
 {
     List{Node*} queue;
-    int max_layer;
-    foreach(node: topo.nodes.tvalues()) {
-        if (node.sub_topology != sub_topology_id) {
+
+    foreach(node: state.topo.nodes.tvalues()) {
+        bool include;
+        foreach(toggle : state.toggles) {
+            if (toggle.id == node.sub_topology && toggle.enabled) {
+                include = true;
+                break;
+            }
+        }
+        if (!include) {
             node.layer = -2;
             continue;
         }
@@ -274,10 +293,10 @@ fn int graph(Topology topo, int sub_topology_id = 0)
     while (queue.len() > 0) {
         Node* current_node = queue.pop()!!;
         int next_layer = current_node.layer + 1;
-        if (current_node.layer > max_layer) max_layer = current_node.layer;
+        if (current_node.layer > state.max_layer) state.max_layer = current_node.layer;
 
         foreach(downstream_name: current_node.downstream) {
-            Node*? downstream = topo.nodes.get(downstream_name);
+            Node*? downstream = state.topo.nodes.get(downstream_name);
             if (catch downstream) continue;
             if (downstream.layer < next_layer) {
                 downstream.layer = next_layer;
@@ -285,37 +304,40 @@ fn int graph(Topology topo, int sub_topology_id = 0)
             }
         }
     }
-    io::printfn("max_layer: %d", max_layer);
-    return max_layer;
 }
 
-fn NodesByLayer calculate_positions(Topology topo, usz max_layer, int sub_topology_id = 0)
+fn NodesByLayer calculate_positions(State state)
 {
     NodesByLayer layers;
-    layers.tinit(max_layer + 1);
-    foreach(node: topo.nodes.tvalues()) {
-        if (node.sub_topology != sub_topology_id) continue;
-        if (node.layer >= 0 && node.layer <= max_layer) {
+    layers.tinit(state.max_layer + 1);
+    foreach(node: state.topo.nodes.tvalues()) {
+
+        bool include;
+        foreach(toggle : state.toggles) {
+            if (toggle.id == node.sub_topology && toggle.enabled) {
+                include = true;
+                break;
+            }
+        }
+        if (!include) continue;
+        if (node.layer >= 0 && node.layer <= state.max_layer) {
             layers[node.layer].push(node);
         }
     } 
+
+    const float DRAW_WIDTH = SCREEN_WIDTH - (2f * MARGIN);
+    const float DRAW_HEIGHT = SCREEN_HEIGHT - (2f * MARGIN);
     float layer_step_size = 0f;
-    if (max_layer > 0) {
-        float available_width = (float)SCREEN_WIDTH - (2f * MARGIN); 
-        layer_step_size = available_width / (float)max_layer;
-    }
-    for (int i; i <= max_layer; i++) {
+    if (state.max_layer > 0) layer_step_size = DRAW_WIDTH / (float)state.max_layer;
+
+    for (int i; i <= state.max_layer; i++) {
         Nodes layer_nodes = layers[i];
         float layer_pos_x = (float)MARGIN + (float)i * layer_step_size;
-        if (max_layer == 0) {
-            layer_pos_x = (float)SCREEN_WIDTH / 2f;
-        }
+        if (state.max_layer == 0) layer_pos_x = MARGIN + DRAW_WIDTH / 2f;
         usz total_vertical_space = layer_nodes.len() * NODE_VERTICAL_STEP - NODE_PADDING;
-        usz offset_for_centering = (SCREEN_HEIGHT - total_vertical_space) / 2;
-        usz current_y = offset_for_centering + NODE_RADIUS;
-        if (current_y < MARGIN) {
-            current_y = MARGIN;
-        }
+        float offset_y = (DRAW_HEIGHT - total_vertical_space) / 2f;
+        float current_y = MARGIN + offset_y + NODE_RADIUS;
+
         foreach(j, Node * node : layer_nodes) {
             node.x = (int) layer_pos_x;
             node.y = (int) current_y;

@@ -232,37 +232,39 @@ fn void Topology.parse_sub(&self, int id, String[] input, int* offset)
                 node = allocator::new(self.alloc, Node, {
                     .sub_topology = id,
                     .kind = SOURCE,
-                    .name = line.trim().tsplit(" ")[1],
+                    .name = line.trim().tsplit(" ")[1].trim(),
                     .layer = -1,
                 });
                 usz a = line.index_of_char('[')!! + 1;
                 usz b = line.index_of_char(']')!! - 1;
                 String[] topics = line[a..b].tsplit(",");
                 foreach(topic: topics) {
-                    if (!topic) continue;
-                    node.topics.push(topic);
+                    String topic_trim = topic.trim();
+                    if (!topic_trim) continue;
+                    node.topics.push(topic_trim);
                 }
             case line.contains("Processor: "):
                 if (node != null && node.name) self.nodes.@get_or_set(node.name, node);
                 node = allocator::new(self.alloc, Node, {
                     .sub_topology = id,
                     .kind = PROCESSOR,
-                    .name = line.trim().tsplit(" ")[1],
+                    .name = line.trim().tsplit(" ")[1].trim(),
                     .layer = -1,
                 });
                 usz a = line.index_of_char('[')!! + 1;
                 usz b = line.index_of_char(']')!! - 1;
                 String[] stores = line[a..b].tsplit(",");
                 foreach(store: stores) {
-                    if (!store) continue;
-                    node.stores.push(store);
+                    String store_trim = store.trim();
+                    if (!store_trim) continue;
+                    node.stores.push(store_trim);
                 }
             case line.contains("Sink: "):
                 if (node != null && node.name) self.nodes.@get_or_set(node.name, node);
                 node = allocator::new(self.alloc, Node, {
                     .sub_topology = id,
                     .kind = SINK,
-                    .name = line.trim().tsplit(" ")[1],
+                    .name = line.trim().tsplit(" ")[1].trim(),
                     .layer = -1,
                 });
                 usz a = line.index_of_char('(')!! + 1;
@@ -271,10 +273,10 @@ fn void Topology.parse_sub(&self, int id, String[] input, int* offset)
                 String topic = line[a+skew.len..b];
                 if (topic) node.topics.push(topic);
             case line.contains("-->"):
-                String dstream = line.tsplit("--> ")[1];
+                String dstream = line.tsplit("--> ")[1].trim();
                 if (dstream != "none") node.downstream.push(dstream); 
             case line.contains("<--"):
-                node.upstream.push(line.tsplit("<-- ")[1]);
+                node.upstream.push(line.tsplit("<-- ")[1].trim());
         }
     }
 
