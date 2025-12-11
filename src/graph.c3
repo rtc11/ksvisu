@@ -31,6 +31,29 @@ struct Fonts {
     Font bold;
 }
 
+struct State
+{
+    Topology topo;
+    List{Toggle*} toggles;
+    Fonts fonts;
+    usz max_layer;           // max layers in the (enabled) sub-topologies
+    bool is_panning;         // when left mouse is pressed and screen is dragged
+    Vector2 last_mouse_pos_world; 
+    bool recalculate_layout; // when to recalculate graph and calculate_positions
+    float max_node_width;    // max horizontal space required by a node's label
+}
+
+
+struct Toggle
+{
+    ZString label;
+    int id;
+    Rectangle button;
+    bool enabled;
+}
+
+fn bool Toggle.less(&self, Toggle* other) => self.id < other.id; // used in quicksort
+
 fn void visualize(Topology topo)
 {
     rl::setConfigFlags(MSAA_4X_HINT);
@@ -54,17 +77,21 @@ fn void visualize(Topology topo)
     State state = { 
         .topo = topo,
         .fonts = fonts, 
+        .recalculate_layout = true,
     };
 
     state.setup_sub_topology_buttons(topo);
-    graph(&state);
-    NodesByLayer layers = calculate_positions(state);
 
     while (!rl::windowShouldClose()) {
         if (rl::isKeyPressed(rl::KEY_ENTER)) break;
 
         camera.mouse_zoom();
         camera.mouse_panning(&state);
+        if (state.recalculate_layout) {
+            graph(&state);
+            calculate_positions(&state);
+            state.recalculate_layout = false;
+        }
 
         rl::beginDrawing();
         rl::clearBackground(BG);
@@ -147,6 +174,7 @@ fn void State.setup_sub_topology_buttons(&self, Topology topo)
             .label = string::tformat_zstr("%d", node.sub_topology) }
         );
         if (sub_id == 3) toggle.enabled = true;
+        // toggle.enabled = true;
         self.toggles.push(toggle);
         quicksort(&self.toggles);
     }
@@ -162,32 +190,13 @@ fn void State.setup_sub_topology_buttons(&self, Topology topo)
     }
 }
 
-struct Toggle
-{
-    ZString label;
-    int id;
-    Rectangle button;
-    bool enabled;
-}
-
-fn bool Toggle.less(&self, Toggle* other) => self.id < other.id;
-
-struct State
-{
-    Topology topo;
-    List{Toggle*} toggles;
-    Fonts fonts;
-    usz max_layer;
-    bool is_panning;
-    Vector2 last_mouse_pos_world;
-}
-
 fn void draw_topology_toggles(State* state)
 {
     foreach(toggle: state.toggles) {
         if (rl::checkCollisionPointRec(rl::getMousePosition(), toggle.button)) {
             if (rl::isMouseButtonPressed(LEFT)) {
                 toggle.enabled = !toggle.enabled;
+                state.recalculate_layout = true;
             }
         }
 
@@ -270,6 +279,8 @@ fn void Node.connect(&self, Node other)
 fn void graph(State* state)
 {
     List{Node*} queue;
+    state.max_layer = 0;
+    state.max_node_width = 0;
 
     foreach(node: state.topo.nodes.tvalues()) {
         bool include;
@@ -279,34 +290,55 @@ fn void graph(State* state)
                 break;
             }
         }
+
         if (!include) {
-            node.layer = -2;
+            node.layer = -2; // invisible
             continue;
         }
-        switch (node.kind) {
-            case SOURCE: queue.push(node);
-            default: node.layer = -1;
+
+        int font_size = 16;
+        Vector2 text_size = rl::measureTextEx(
+            state.fonts.thin,
+            node.name.zstr_tcopy(),
+            (float) font_size,
+            3f,
+        );
+        float required_width = 2f * NODE_RADIUS + text_size.x;
+        if (required_width > state.max_node_width) {
+            state.max_node_width = required_width;
+        }
+
+        node.layer = 0;
+        if (node.kind == SOURCE) {
+            queue.push(node);
         }
     }
 
-    // BFS
+    // BFS - Longest path
     while (queue.len() > 0) {
-        Node* current_node = queue.pop()!!;
-        int next_layer = current_node.layer + 1;
-        if (current_node.layer > state.max_layer) state.max_layer = current_node.layer;
-
-        foreach(downstream_name: current_node.downstream) {
-            Node*? downstream = state.topo.nodes.get(downstream_name);
-            if (catch downstream) continue;
-            if (downstream.layer < next_layer) {
-                downstream.layer = next_layer;
-                queue.push(downstream);
+        Node* cur = queue.pop()!!;
+        if (cur.layer > state.max_layer) {
+            state.max_layer = cur.layer;
+        }
+        foreach(dsname: cur.downstream) {
+            Node*? ds = state.topo.nodes.get(dsname);
+            if (catch ds) continue;
+            // if (ds.layer == -1) continue;
+            if (ds.layer == -2) continue;
+            int potential_layer = cur.layer + 1;
+            if (potential_layer > ds.layer) {
+                ds.layer = potential_layer;
+                queue.push(ds);
+                if (ds.layer > state.max_layer) {
+                    state.max_layer = ds.layer;
+                }
             }
         }
     }
+
 }
 
-fn NodesByLayer calculate_positions(State state)
+fn NodesByLayer calculate_positions(State* state)
 {
     NodesByLayer layers;
     layers.tinit(state.max_layer + 1);
@@ -328,7 +360,16 @@ fn NodesByLayer calculate_positions(State state)
     const float DRAW_WIDTH = SCREEN_WIDTH - (2f * MARGIN);
     const float DRAW_HEIGHT = SCREEN_HEIGHT - (2f * MARGIN);
     float layer_step_size = 0f;
-    if (state.max_layer > 0) layer_step_size = DRAW_WIDTH / (float)state.max_layer;
+    float required_min_step = state.max_node_width + NODE_PADDING;
+
+    if (state.max_layer > 0) {
+        float calculated_step = DRAW_WIDTH / (float) state.max_layer;
+
+        layer_step_size = math::max(calculated_step, required_min_step);
+        // layer_step_size = DRAW_WIDTH / (float)state.max_layer;
+    } else {
+        layer_step_size = DRAW_WIDTH;
+    }
 
     for (int i; i <= state.max_layer; i++) {
         Nodes layer_nodes = layers[i];
