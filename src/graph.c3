@@ -22,6 +22,7 @@ const rl::Color PURPLE = { 181, 33, 127, 255};
 const rl::Color BLUE = { 50, 100, 200, 255};
 const rl::Color GOLD = { 218, 165, 35, 255};
 const rl::Color HIGHLIGHT_YELLOW = { 255, 255, 0, 255};
+const rl::Color SILVER = {192, 192, 192, 255};
 
 alias Nodes = List{Node*};
 alias NodesByLayer = List{Nodes};
@@ -360,14 +361,9 @@ fn void Node.connect(&self, Node other, State* state)
     rl::Color color = is_highlighted ? HIGHLIGHT_YELLOW : GOLD;
     float thickness = is_highlighted ? 7f : 5f;
 
-    float t_start = NODE_RADIUS / len;
-    Vector2 start_pos = rl::vector2Lerp(center_start, center_end, t_start);
-
-    float t_tip = 1f - (NODE_RADIUS / len);
-    Vector2 arrow_tip = rl::vector2Lerp(center_start, center_end, t_tip);
-
-    float t_base = t_tip - (ARROW_SIZE / len);
-    Vector2 arrow_base = rl::vector2Lerp(center_start, center_end, t_base);
+    Vector2 start_pos = rl::vector2Lerp(center_start, center_end, NODE_RADIUS / len);
+    Vector2 arrow_tip = rl::vector2Lerp(center_start, center_end, 1f - (NODE_RADIUS / len));
+    Vector2 arrow_base = rl::vector2Lerp(center_start, center_end, (1f - (NODE_RADIUS / len)) - (ARROW_SIZE / len));
 
     rl::drawLineEx(start_pos, arrow_base, thickness, color);
     draw_arrowhead(arrow_tip, arrow_base, ARROW_SIZE, color);
@@ -489,11 +485,6 @@ fn void graph(State* state)
     }
     
     state.max_layer = 0;
-    // foreach(node : all_nodes) {
-    //     if (node.layer > state.max_layer) {
-    //         state.max_layer = node.layer;
-    //     }
-    // }
     // manual cycle layer adjustment end
 
     foreach(node: state.topo.nodes.tvalues()) {
@@ -568,6 +559,7 @@ fn NodesByLayer calculate_positions(State* state)
             }
             quicksort(&layer_nodes, &cmp_barycenter);
         }
+        // Edge crossing minimization (barycenter) end
 
         float layer_pos_x = MARGIN + i * layer_step_size;
         if (state.max_layer == 0) layer_pos_x = MARGIN + DRAW_WIDTH / 2f;
