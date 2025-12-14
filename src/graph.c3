@@ -21,6 +21,7 @@ const rl::Color RED = { 200, 50, 50, 255};
 const rl::Color PURPLE = { 181, 33, 127, 255};
 const rl::Color BLUE = { 50, 100, 200, 255};
 const rl::Color GOLD = { 218, 165, 35, 255};
+const rl::Color HIGHLIGHT_YELLOW = { 255, 255, 0, 255};
 
 alias Nodes = List{Node*};
 alias NodesByLayer = List{Nodes};
@@ -41,6 +42,7 @@ struct State
     Vector2 last_mouse_pos_world; 
     bool recalculate_layout; // when to recalculate graph and calculate_positions
     float max_node_width;    // max horizontal space required by a node's label
+    Node* selected_node;
 }
 
 
@@ -87,6 +89,9 @@ fn void visualize(Topology topo)
 
         camera.mouse_zoom();
         camera.mouse_panning(&state);
+
+        camera.handle_input(&state);
+
         if (state.recalculate_layout) {
             graph(&state);
             calculate_positions(&state);
@@ -137,7 +142,7 @@ fn void draw_subtopology(State* state)
             }
 
             if (downstream_is_visible) {
-                node.connect(*downstream);
+                node.connect(*downstream, state);
             }
         }
     };
@@ -262,6 +267,41 @@ fn void Camera2D.mouse_panning(&self, State* state)
 
 }
 
+fn void Camera2D.handle_input(&self, State* state) 
+{
+    Vector2 mouse_world = rl::getScreenToWorld2D(rl::getMousePosition(), *self);
+    Node* hovered = null;
+
+    foreach (node: state.topo.nodes.tvalues()) {
+        bool is_visible;
+        foreach (toggle : state.toggles) {
+            if (toggle.id == node.sub_topology && toggle.enabled) {
+                is_visible = true;
+                break;
+            }
+        }
+
+        if (!is_visible) continue;
+
+        Vector2 node_center = { (float)node.x, (float)node.y };
+
+        if (rl::checkCollisionPointCircle(mouse_world, node_center, (float)NODE_RADIUS)) {
+            hovered = node;
+            break;
+        }
+    }
+
+    if (rl::isMouseButtonPressed(LEFT)) {
+        if (hovered) {
+            state.selected_node = hovered;
+        } else if (!state.is_panning) {
+            state.selected_node = null;
+        }
+    }
+}
+
+const float GLOW_THICKNESS = 4f;
+
 fn void Node.draw(&self, State* state)
 {
     rl::Color color;
@@ -271,7 +311,18 @@ fn void Node.draw(&self, State* state)
         case SINK: color = BLUE;
     }
     rl::drawCircle(self.x, self.y, NODE_RADIUS, color);
-    rl::drawCircleLines(self.x, self.y, NODE_RADIUS, GOLD);
+
+    bool is_selected = (self == state.selected_node);
+    float radius = (float) NODE_RADIUS;
+    Vector2 center = { (float)self.x, (float)self.y };
+
+    if (is_selected) {
+        rl::drawCircleV(center, radius + GLOW_THICKNESS, HIGHLIGHT_YELLOW);
+    }
+
+    rl::drawCircleV(center, radius, color);
+    rl::drawCircleLinesV(center, radius, GOLD);
+
     ZString name = self.name.zstr_tcopy();
     int font_size = 16;
     int text_width = rl::measureText(name, font_size);
@@ -295,11 +346,47 @@ fn void Node.draw(&self, State* state)
     }
 }
 
-fn void Node.connect(&self, Node other)
+const float ARROW_SIZE = 15; 
+const float GAP_DIST = NODE_RADIUS + ARROW_SIZE;
+
+fn void Node.connect(&self, Node other, State* state)
 {
-    Vector2 startPos = {(float) self.x + NODE_RADIUS, (float) self.y };
-    Vector2 endPos = {(float) other.x - NODE_RADIUS, (float) other.y };
-    rl::drawLineEx(startPos, endPos, 5, GOLD);
+    Vector2 center_start = { (float)self.x, (float)self.y };
+    Vector2 center_end = { (float)other.x, (float)other.y };
+    Vector2 vec_to_other = rl::vector2Subtract(center_end, center_start);
+    float dist = rl::vector2Length(vec_to_other);
+    if (dist == 0f) return;
+    Vector2 normal_vec = rl::vector2Scale(vec_to_other, 1f / dist);
+    Vector2 start_pos = rl::vector2Add(center_start, rl::vector2Scale(normal_vec, (float)NODE_RADIUS));
+    Vector2 line_end_pos = rl::vector2Subtract(center_end, rl::vector2Scale(normal_vec, ARROW_SIZE));
+    bool is_highlighted;
+    if (state.selected_node) {
+        if (self == state.selected_node || &other == state.selected_node) {
+            is_highlighted = true;
+        }
+    }
+    rl::Color color = is_highlighted ? HIGHLIGHT_YELLOW : GOLD;
+    float thickness = is_highlighted ? 7f : 5f;
+    rl::drawLineEx(start_pos, line_end_pos, thickness, color);
+
+    Vector2 arrow_dest = rl::vector2Subtract(center_end, rl::vector2Scale(normal_vec, (float)NODE_RADIUS));
+    draw_arrowhead(arrow_dest, line_end_pos, ARROW_SIZE, color);
+    // Vector2 startPos = {(float) self.x + NODE_RADIUS, (float) self.y };
+    // Vector2 endPos = {(float) other.x - NODE_RADIUS, (float) other.y };
+    // rl::drawLineEx(startPos, endPos, 5, GOLD);
+}
+
+fn void draw_arrowhead(Vector2 end, Vector2 start, float size, rl::Color color)
+{
+    Vector2 dir = rl::vector2Subtract(end, start);
+    float length = rl::vector2Length(dir);
+    if (length == 0f) return;
+    dir = rl::vector2Scale(dir, 1 / length);
+    Vector2 base = rl::vector2Subtract(end, rl::vector2Scale(dir, size));
+    Vector2 perp = { -dir.y, dir.x };
+    Vector2 wing1 = rl::vector2Add(base, rl::vector2Scale(perp, size * 0.5));
+    Vector2 wing2 = rl::vector2Subtract(base, rl::vector2Scale(perp, size * 0.5));
+    rl::drawTriangle(end, wing1, wing2, color);
 }
 
 fn void graph(State* state)
