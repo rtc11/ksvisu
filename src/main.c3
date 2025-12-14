@@ -276,9 +276,16 @@ fn void Topology.parse_sub(&self, int id, String[] input, int* offset)
                 if (topic) node.topics.push(topic);
             case line.contains("-->"):
                 String dstream = line.tsplit("--> ")[1].trim();
-                if (dstream != "none") node.downstream.push(dstream); 
+                if (dstream == "none") continue;
+                foreach (ds : dstream.tsplit(",", skip_empty:true)) {
+                    node.downstream.push(ds.trim());
+                }
             case line.contains("<--"):
-                node.upstream.push(line.tsplit("<-- ")[1].trim());
+                String ustream = line.tsplit("<-- ")[1].trim();
+                if (ustream == "none") continue;
+                foreach (us : ustream.tsplit(",", skip_empty:true)) {
+                    node.upstream.push(us.trim());
+                }
         }
     }
 
