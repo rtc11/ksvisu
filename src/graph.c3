@@ -355,10 +355,11 @@ fn void Node.connect(&self, Node other, State* state)
     Vector2 center_end = { (float)other.x, (float)other.y };
     Vector2 vec_to_other = rl::vector2Subtract(center_end, center_start);
     float dist = rl::vector2Length(vec_to_other);
-    if (dist == 0f) return;
+    if (dist < GAP_DIST + 5f) return;
     Vector2 normal_vec = rl::vector2Scale(vec_to_other, 1f / dist);
     Vector2 start_pos = rl::vector2Add(center_start, rl::vector2Scale(normal_vec, (float)NODE_RADIUS));
-    Vector2 line_end_pos = rl::vector2Subtract(center_end, rl::vector2Scale(normal_vec, ARROW_SIZE));
+    Vector2 arrow_base = rl::vector2Subtract(center_end, rl::vector2Scale(normal_vec, GAP_DIST));
+    Vector2 arrow_tip = rl::vector2Subtract(center_end, rl::vector2Scale(normal_vec, (float)NODE_RADIUS));
     bool is_highlighted;
     if (state.selected_node) {
         if (self == state.selected_node || &other == state.selected_node) {
@@ -367,26 +368,24 @@ fn void Node.connect(&self, Node other, State* state)
     }
     rl::Color color = is_highlighted ? HIGHLIGHT_YELLOW : GOLD;
     float thickness = is_highlighted ? 7f : 5f;
-    rl::drawLineEx(start_pos, line_end_pos, thickness, color);
+    rl::drawLineEx(start_pos, arrow_base, thickness, color);
+    draw_arrowhead(arrow_tip, arrow_base, ARROW_SIZE, color);
 
-    Vector2 arrow_dest = rl::vector2Subtract(center_end, rl::vector2Scale(normal_vec, (float)NODE_RADIUS));
-    draw_arrowhead(arrow_dest, line_end_pos, ARROW_SIZE, color);
     // Vector2 startPos = {(float) self.x + NODE_RADIUS, (float) self.y };
     // Vector2 endPos = {(float) other.x - NODE_RADIUS, (float) other.y };
     // rl::drawLineEx(startPos, endPos, 5, GOLD);
 }
 
-fn void draw_arrowhead(Vector2 end, Vector2 start, float size, rl::Color color)
+fn void draw_arrowhead(Vector2 tip, Vector2 base, float size, rl::Color color)
 {
-    Vector2 dir = rl::vector2Subtract(end, start);
-    float length = rl::vector2Length(dir);
-    if (length == 0f) return;
-    dir = rl::vector2Scale(dir, 1 / length);
-    Vector2 base = rl::vector2Subtract(end, rl::vector2Scale(dir, size));
-    Vector2 perp = { -dir.y, dir.x };
-    Vector2 wing1 = rl::vector2Add(base, rl::vector2Scale(perp, size * 0.5));
-    Vector2 wing2 = rl::vector2Subtract(base, rl::vector2Scale(perp, size * 0.5));
-    rl::drawTriangle(end, wing1, wing2, color);
+    Vector2 dir_vector = rl::vector2Subtract(tip, base); 
+    float length = rl::vector2Length(dir_vector);
+    if (length < 1f) return;
+    Vector2 unit_dir = rl::vector2Scale(dir_vector, 1f / length);
+    Vector2 unit_perp = { -unit_dir.y, unit_dir.x };
+    Vector2 wing1 = rl::vector2Add(base, rl::vector2Scale(unit_perp, size * 0.5f));
+    Vector2 wing2 = rl::vector2Subtract(base, rl::vector2Scale(unit_perp, size * 0.5f));
+    rl::drawTriangle(tip, wing2, wing1, color);
 }
 
 fn void graph(State* state)
@@ -493,18 +492,36 @@ fn void graph(State* state)
     }
     
     state.max_layer = 0;
-    foreach(node : all_nodes) {
+    // foreach(node : all_nodes) {
+    //     if (node.layer > state.max_layer) {
+    //         state.max_layer = node.layer;
+    //     }
+    // }
+    // manual cycle layer adjustment end
+
+    foreach(node: state.topo.nodes.tvalues()) {
+        bool is_visible;
+        foreach(toggle: state.toggles) {
+            if (toggle.id == node.sub_topology && toggle.enabled) {
+                is_visible = true;
+                break;
+            }
+        }
+        if (!is_visible) continue;
         if (node.layer > state.max_layer) {
             state.max_layer = node.layer;
         }
     }
-    // manual cycle layer adjustment end
 }
 
 fn NodesByLayer calculate_positions(State* state)
 {
     NodesByLayer layers;
-    layers.tinit(state.max_layer + 1);
+    for (int i; i <= state.max_layer; i++) {
+            Nodes n;
+            n.tinit();
+            layers.push(n);
+    }
     foreach(node: state.topo.nodes.tvalues()) {
 
         bool include;

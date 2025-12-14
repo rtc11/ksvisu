@@ -17,5 +17,5 @@
     }
   },
   "cpu": "generic",
-  "opt": "O2"
+  "opt": "O0"
 }
