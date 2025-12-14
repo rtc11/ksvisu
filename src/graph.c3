@@ -353,27 +353,24 @@ fn void Node.connect(&self, Node other, State* state)
 {
     Vector2 center_start = { (float)self.x, (float)self.y };
     Vector2 center_end = { (float)other.x, (float)other.y };
-    Vector2 vec_to_other = rl::vector2Subtract(center_end, center_start);
-    float dist = rl::vector2Length(vec_to_other);
-    if (dist < GAP_DIST + 5f) return;
-    Vector2 normal_vec = rl::vector2Scale(vec_to_other, 1f / dist);
-    Vector2 start_pos = rl::vector2Add(center_start, rl::vector2Scale(normal_vec, (float)NODE_RADIUS));
-    Vector2 arrow_base = rl::vector2Subtract(center_end, rl::vector2Scale(normal_vec, GAP_DIST));
-    Vector2 arrow_tip = rl::vector2Subtract(center_end, rl::vector2Scale(normal_vec, (float)NODE_RADIUS));
-    bool is_highlighted;
-    if (state.selected_node) {
-        if (self == state.selected_node || &other == state.selected_node) {
-            is_highlighted = true;
-        }
-    }
+    Vector2 dir_vec = rl::vector2Subtract(center_end, center_start);
+    float len = rl::vector2Length(dir_vec);
+    if (len < 1f) return;
+    bool is_highlighted = (state.selected_node == self || state.selected_node == &other);
     rl::Color color = is_highlighted ? HIGHLIGHT_YELLOW : GOLD;
     float thickness = is_highlighted ? 7f : 5f;
+
+    float t_start = (float)NODE_RADIUS / len;
+    Vector2 start_pos = rl::vector2Lerp(center_start, center_end, t_start);
+
+    float t_tip = 1f - ((float)NODE_RADIUS / len);
+    Vector2 arrow_tip = rl::vector2Lerp(center_start, center_end, t_tip);
+
+    float t_base = t_tip - (ARROW_SIZE / len);
+    Vector2 arrow_base = rl::vector2Lerp(center_start, center_end, t_base);
+
     rl::drawLineEx(start_pos, arrow_base, thickness, color);
     draw_arrowhead(arrow_tip, arrow_base, ARROW_SIZE, color);
-
-    // Vector2 startPos = {(float) self.x + NODE_RADIUS, (float) self.y };
-    // Vector2 endPos = {(float) other.x - NODE_RADIUS, (float) other.y };
-    // rl::drawLineEx(startPos, endPos, 5, GOLD);
 }
 
 fn void draw_arrowhead(Vector2 tip, Vector2 base, float size, rl::Color color)
