@@ -32,8 +32,8 @@ struct Node
     List{String} upstream;
     // GUI fields
     int layer; 
-    int x;
-    int y;
+    float x;
+    float y;
     float barycenter;
 }
 

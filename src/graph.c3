@@ -7,12 +7,12 @@ import std::collections::map;
 import std::sort;
 import raylib5;
 
-const usz SCREEN_WIDTH = 1600;
-const usz SCREEN_HEIGHT = 1200;
-const usz NODE_RADIUS = 50;
-const usz NODE_PADDING = 50;
-const usz MARGIN = NODE_PADDING;
-const usz NODE_VERTICAL_STEP = (2 * NODE_RADIUS) + NODE_PADDING;
+const int SCREEN_WIDTH = 1600;
+const int SCREEN_HEIGHT = 1200;
+const float NODE_RADIUS = 50;
+const float NODE_PADDING = 50;
+const float MARGIN = NODE_PADDING;
+const float NODE_VERTICAL_STEP = (2 * NODE_RADIUS) + NODE_PADDING;
 
 const rl::Color BG = { 20, 28, 33, 255};
 const rl::Color BODY = { 13, 18, 20, 255};
@@ -283,9 +283,9 @@ fn void Camera2D.handle_input(&self, State* state)
 
         if (!is_visible) continue;
 
-        Vector2 node_center = { (float)node.x, (float)node.y };
+        Vector2 node_center = { node.x, node.y };
 
-        if (rl::checkCollisionPointCircle(mouse_world, node_center, (float)NODE_RADIUS)) {
+        if (rl::checkCollisionPointCircle(mouse_world, node_center, NODE_RADIUS)) {
             hovered = node;
             break;
         }
@@ -310,11 +310,11 @@ fn void Node.draw(&self, State* state)
         case PROCESSOR: color = self.is_stateful() ? RED : PURPLE;  
         case SINK: color = BLUE;
     }
-    rl::drawCircle(self.x, self.y, NODE_RADIUS, color);
+    rl::drawCircle((int)self.x, (int)self.y, NODE_RADIUS, color);
 
     bool is_selected = (self == state.selected_node);
-    float radius = (float) NODE_RADIUS;
-    Vector2 center = { (float)self.x, (float)self.y };
+    float radius =  NODE_RADIUS;
+    Vector2 center = { self.x, self.y };
 
     if (is_selected) {
         rl::drawCircleV(center, radius + GLOW_THICKNESS, HIGHLIGHT_YELLOW);
@@ -329,8 +329,8 @@ fn void Node.draw(&self, State* state)
     rl::drawTextEx(
         state.fonts.thin,
         name,
-        { self.x - (text_width / 2f), (float)self.y + NODE_RADIUS },
-        (float) font_size,
+        { self.x - (text_width / 2f), self.y + NODE_RADIUS },
+        font_size,
         3f,
         rl::WHITE,
     );
@@ -338,8 +338,8 @@ fn void Node.draw(&self, State* state)
         rl::drawTextEx(
             state.fonts.thin,
             self.stores[0].zstr_tcopy(),
-            { self.x - (text_width / 2f), (float)self.y + NODE_RADIUS + font_size },
-            (float) font_size,
+            { self.x - (text_width / 2f), self.y + NODE_RADIUS + font_size },
+            font_size,
             3f,
             rl::WHITE,
         );
@@ -351,8 +351,8 @@ const float GAP_DIST = NODE_RADIUS + ARROW_SIZE;
 
 fn void Node.connect(&self, Node other, State* state)
 {
-    Vector2 center_start = { (float)self.x, (float)self.y };
-    Vector2 center_end = { (float)other.x, (float)other.y };
+    Vector2 center_start = { self.x, self.y };
+    Vector2 center_end = { other.x, other.y };
     Vector2 dir_vec = rl::vector2Subtract(center_end, center_start);
     float len = rl::vector2Length(dir_vec);
     if (len < 1f) return;
@@ -360,10 +360,10 @@ fn void Node.connect(&self, Node other, State* state)
     rl::Color color = is_highlighted ? HIGHLIGHT_YELLOW : GOLD;
     float thickness = is_highlighted ? 7f : 5f;
 
-    float t_start = (float)NODE_RADIUS / len;
+    float t_start = NODE_RADIUS / len;
     Vector2 start_pos = rl::vector2Lerp(center_start, center_end, t_start);
 
-    float t_tip = 1f - ((float)NODE_RADIUS / len);
+    float t_tip = 1f - (NODE_RADIUS / len);
     Vector2 arrow_tip = rl::vector2Lerp(center_start, center_end, t_tip);
 
     float t_base = t_tip - (ARROW_SIZE / len);
@@ -410,7 +410,7 @@ fn void graph(State* state)
         Vector2 text_size = rl::measureTextEx(
             state.fonts.thin,
             node.name.zstr_tcopy(),
-            (float) font_size,
+            font_size,
             3f,
         );
         float required_width = 2f * NODE_RADIUS + text_size.x;
@@ -540,7 +540,7 @@ fn NodesByLayer calculate_positions(State* state)
     float required_min_step = state.max_node_width + NODE_PADDING;
 
     if (state.max_layer > 0) {
-        float calculated_step = DRAW_WIDTH / (float) state.max_layer;
+        float calculated_step = DRAW_WIDTH / state.max_layer;
 
         layer_step_size = math::max(calculated_step, required_min_step);
     } else {
@@ -560,18 +560,18 @@ fn NodesByLayer calculate_positions(State* state)
                     Node*? us = state.topo.nodes.get(usname);
                     if (catch us) continue;
                     if (us.layer == (i - 1)) {
-                        total_y += (float) us.y;
+                        total_y += us.y;
                         count++;
                     }
                 }
-                node.barycenter = (count > 0) ? (total_y / (float) count) : node.y;
+                node.barycenter = (count > 0) ? (total_y / count) : node.y;
             }
             quicksort(&layer_nodes, &cmp_barycenter);
         }
 
-        float layer_pos_x = (float)MARGIN + (float)i * layer_step_size;
+        float layer_pos_x = MARGIN + i * layer_step_size;
         if (state.max_layer == 0) layer_pos_x = MARGIN + DRAW_WIDTH / 2f;
-        usz total_vertical_space = layer_nodes.len() * NODE_VERTICAL_STEP - NODE_PADDING;
+        float total_vertical_space = layer_nodes.len() * NODE_VERTICAL_STEP - NODE_PADDING;
         float offset_y = (DRAW_HEIGHT - total_vertical_space) / 2f;
         float current_y = MARGIN + offset_y + NODE_RADIUS;
 
