@@ -16,3 +16,6 @@ Diff between all old and new nodes:
 Open GUI:
 > ksvisu topology.desc -g
 
+
+# TODO
+source & sink nodes can be connected, but not by name. Look at their topics

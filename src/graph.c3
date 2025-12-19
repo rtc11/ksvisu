@@ -4,6 +4,7 @@ import std::io;
 import std::math;
 import std::collections::list;
 import std::collections::map;
+import std::collections::pair;
 import std::sort;
 import raylib5;
 
@@ -339,6 +340,26 @@ fn void Node.draw(&self, State* state)
         rl::drawTextEx(
             state.fonts.thin,
             self.stores[0].zstr_tcopy(),
+            { self.x - (text_width / 2f), self.y + NODE_RADIUS + font_size },
+            font_size,
+            3f,
+            rl::WHITE,
+        );
+    }
+    if (self.kind == SINK && self.has_topics()) {
+        rl::drawTextEx(
+            state.fonts.thin,
+            self.topics[0].zstr_tcopy(),
+            { self.x - (text_width / 2f), self.y + NODE_RADIUS + font_size },
+            font_size,
+            3f,
+            rl::WHITE,
+        );
+    }
+    if (self.kind == SOURCE && self.has_topics()) {
+        rl::drawTextEx(
+            state.fonts.thin,
+            self.topics[0].zstr_tcopy(),
             { self.x - (text_width / 2f), self.y + NODE_RADIUS + font_size },
             font_size,
             3f,

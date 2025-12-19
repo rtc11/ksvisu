@@ -211,8 +211,12 @@ fn void Topology.parse_desc(&self, String[] input)
         if (line.contains("Topologies:")) continue; 
         if (line.contains("Sub-topology:")) {
             String[] parts = line.tsplit(":");
-            int id = parts[1].to_int()!!;
-            self.parse_sub(id, input, &offset);
+            if (try id = parts[1].to_int()) {
+                self.parse_sub(id, input, &offset);
+            } else {
+                // todo:   Sub-topology: 0 for global store (will not generate tasks)
+                self.parse_sub(-1, input, &offset);
+            }
         }
     }
 }
