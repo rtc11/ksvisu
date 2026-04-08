@@ -198,10 +198,14 @@ fn void visualize(Topology topo)
     };
 
     Fonts fonts = { 
-        .regular = rl::loadFont("resources/JetBrainsMono-Regular.ttf"),
-        .thin = rl::loadFont("resources/JetBrainsMonoNL-Thin.ttf"),
-        .bold = rl::loadFont("resources/JetBrainsMono-Bold.ttf"),
+        .regular = rl::loadFontEx("resources/JetBrainsMono-Regular.ttf", 48, null, 0),
+        .thin = rl::loadFontEx("resources/JetBrainsMono-Regular.ttf", 48, null, 0),
+        .bold = rl::loadFontEx("resources/JetBrainsMono-Bold.ttf", 48, null, 0),
     };
+    // Enable bilinear filtering on font atlases for smooth scaling
+    rl::setTextureFilter(fonts.regular.texture, rl::TextureFilter.BILINEAR);
+    rl::setTextureFilter(fonts.thin.texture, rl::TextureFilter.BILINEAR);
+    rl::setTextureFilter(fonts.bold.texture, rl::TextureFilter.BILINEAR);
 
     State state = { 
         .topo = topo,
@@ -437,11 +441,11 @@ fn void draw_source_panel(State* state)
 
     const float PANEL_X = 10f;
     const float PANEL_Y = 35f;
-    const float PANEL_PADDING = 10f;
-    const float LINE_HEIGHT = 16f;
-    const float HEADER_HEIGHT = 22f;
-    const int FONT_SIZE = 14;
-    const int HEADER_FONT_SIZE = 16;
+    const float PANEL_PADDING = 14f;
+    const float LINE_HEIGHT = 20f;
+    const float HEADER_HEIGHT = 28f;
+    const int FONT_SIZE = 16;
+    const int HEADER_FONT_SIZE = 20;
     const float SPACING = 2f;
     const float MAX_PANEL_WIDTH = 800f;
 
@@ -477,10 +481,10 @@ fn void draw_source_panel(State* state)
     float panel_height = content_height + 2f * PANEL_PADDING;
 
     // Draw panel background
-    rl::Color panel_bg = { 13, 18, 20, 230 };
+    rl::Color panel_bg = { 13, 18, 20, 255 };
     Rectangle panel = { PANEL_X, PANEL_Y, panel_width, panel_height };
     rl::drawRectangleRounded(panel, 0.02f, 4, panel_bg);
-    rl::drawRectangleRoundedLinesEx(panel, 0.02f, 4, 1f, GOLD);
+    rl::drawRectangleRoundedLinesEx(panel, 0.02f, 4, 2f, GOLD);
 
     float cx = PANEL_X + PANEL_PADDING;
     float cy = PANEL_Y + PANEL_PADDING;
