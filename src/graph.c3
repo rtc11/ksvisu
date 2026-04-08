@@ -46,7 +46,7 @@ struct State
     Topology topo;
     Topology collapsed_topo;     // always-active merged topology (sinks/sources collapsed by topic)
     List{Toggle*} toggles;
-    List{int} hidden_sub_topologies; // computed set of sub-topology IDs currently hidden
+    HashMap{String, bool} visible_nodes; // computed set of nodes reachable from enabled SOURCEs
     Fonts fonts;
     usz max_layer;           // max layers in the (enabled) sub-topologies
     bool is_panning;         // when left mouse is pressed and screen is dragged
@@ -61,36 +61,17 @@ struct State
 struct Toggle
 {
     ZString label;
-    String topic_name;  // topic name for matching against TOPIC nodes ("" for ALL button)
+    String source_name;  // SOURCE node name ("" for ALL button)
     Rectangle button;
     bool enabled;
 }
 
 fn bool Toggle.less(&self, Toggle* other) => self.label < other.label; // used in quicksort
 
-// Check if a node is visible based on computed hidden sub-topologies.
-// A node is hidden if its sub_topology is in the hidden set.
-// TOPIC nodes are hidden if their upstream sub_topology is hidden, or if
-// their own toggle is disabled (and the upstream is not hidden — that case
-// is already handled by the cascade).
+// Check if a node is visible based on the computed visible_nodes set.
+// A node is visible if it was reached by BFS from any enabled SOURCE toggle.
 fn bool State.is_node_visible(&self, Node* node) {
-    if (self.is_sub_topo_hidden(node.sub_topology)) return false;
-    // For TOPIC nodes: also check if this specific topic toggle is disabled
-    if (node.kind == TOPIC) {
-        foreach (toggle : self.toggles) {
-            if (toggle.topic_name == node.name) {
-                return toggle.enabled;
-            }
-        }
-    }
-    return true;
-}
-
-fn bool State.is_sub_topo_hidden(&self, int sub_topo) {
-    foreach (h : self.hidden_sub_topologies) {
-        if (h == sub_topo) return true;
-    }
-    return false;
+    return self.visible_nodes.has_key(node.name);
 }
 
 // Compute the transitive set of highlighted nodes (all upstream ancestors
@@ -139,75 +120,55 @@ fn void State.compute_highlighted_nodes(&self) {
     }
 }
 
-// Compute which sub-topologies are hidden based on topic toggle states.
-// Algorithm:
-//   1. For each disabled topic toggle, the TOPIC node's sub_topology_secondary
-//      (the downstream sub-topology) is a candidate for hiding.
-//   2. A sub-topology is hidden only if ALL topic paths leading into it are blocked
-//      (either the toggle is disabled, or the upstream sub-topology is itself hidden).
-//   3. Fixed-point iteration: cascade through the graph until stable.
-fn void State.compute_hidden_sub_topologies(&self) {
+// Compute which nodes are visible by BFS from each enabled SOURCE toggle.
+// A node is visible if it is reachable (downstream or upstream) from any
+// enabled SOURCE node. This replaces the old sub-topology-based hiding.
+fn void State.compute_visible_nodes(&self) {
     Topology* topo = self.active_topo();
-    self.hidden_sub_topologies.clear();
+    self.visible_nodes.clear();
 
-    // Collect all TOPIC nodes from the topology
-    List{Node*} topic_nodes;
-    topo.nodes.@each(; String name, Node* node) {
-        if (node.kind == TOPIC) {
-            topic_nodes.push(node);
+    // For each enabled SOURCE toggle, BFS both downstream and upstream
+    foreach (toggle : self.toggles) {
+        if (toggle.source_name.len == 0) continue; // skip ALL button
+        if (!toggle.enabled) continue;
+
+        Node*? source_node = topo.nodes.get(toggle.source_name);
+        if (catch source_node) continue;
+
+        // BFS downstream from this SOURCE
+        List{String} queue;
+        queue.tinit();
+        self.visible_nodes.set(source_node.name, true);
+        foreach (ds : source_node.downstream) {
+            queue.push(ds);
         }
-    };
-
-    // Fixed-point iteration
-    bool changed = true;
-    while (changed) {
-        changed = false;
-
-        foreach (topic_node : topic_nodes) {
-            int downstream_sub = topic_node.sub_topology_secondary;
-            if (downstream_sub < 0) continue;
-            // Skip if already hidden
-            if (self.is_sub_topo_hidden(downstream_sub)) continue;
-
-            // Check if the upstream sub-topology of this TOPIC node is hidden
-            bool upstream_hidden = self.is_sub_topo_hidden(topic_node.sub_topology);
-
-            // Find this topic's toggle
-            bool toggle_disabled = false;
-            foreach (toggle : self.toggles) {
-                if (toggle.topic_name == topic_node.name) {
-                    toggle_disabled = !toggle.enabled;
-                    break;
+        while (queue.len() > 0) {
+            String name = queue.pop()!!;
+            if (self.visible_nodes.has_key(name)) continue;
+            self.visible_nodes.set(name, true);
+            Node*? node = topo.nodes.get(name);
+            if (catch node) continue;
+            foreach (ds : node.downstream) {
+                if (!self.visible_nodes.has_key(ds)) {
+                    queue.push(ds);
                 }
             }
+        }
 
-            // This path into downstream_sub is blocked if toggle is off OR upstream is hidden
-            bool this_path_blocked = toggle_disabled || upstream_hidden;
-            if (!this_path_blocked) continue;
-
-            // Check if ALL paths into downstream_sub are blocked
-            bool all_paths_blocked = true;
-            foreach (other_topic : topic_nodes) {
-                if (other_topic.sub_topology_secondary != downstream_sub) continue;
-
-                bool other_upstream_hidden = self.is_sub_topo_hidden(other_topic.sub_topology);
-                bool other_toggle_disabled = false;
-                foreach (toggle : self.toggles) {
-                    if (toggle.topic_name == other_topic.name) {
-                        other_toggle_disabled = !toggle.enabled;
-                        break;
-                    }
+        // BFS upstream from this SOURCE
+        foreach (us : source_node.upstream) {
+            queue.push(us);
+        }
+        while (queue.len() > 0) {
+            String name = queue.pop()!!;
+            if (self.visible_nodes.has_key(name)) continue;
+            self.visible_nodes.set(name, true);
+            Node*? node = topo.nodes.get(name);
+            if (catch node) continue;
+            foreach (us : node.upstream) {
+                if (!self.visible_nodes.has_key(us)) {
+                    queue.push(us);
                 }
-
-                if (!other_toggle_disabled && !other_upstream_hidden) {
-                    all_paths_blocked = false;
-                    break;
-                }
-            }
-
-            if (all_paths_blocked) {
-                self.hidden_sub_topologies.push(downstream_sub);
-                changed = true;
             }
         }
     }
@@ -248,7 +209,7 @@ fn void visualize(Topology topo)
         .recalculate_layout = true,
     };
 
-    state.setup_topic_buttons(topo);
+    state.setup_source_buttons(topo);
 
     while (!rl::windowShouldClose()) {
         if (rl::isKeyPressed(rl::KEY_ENTER)) break;
@@ -264,7 +225,7 @@ fn void visualize(Topology topo)
                 state.topo.restore_edges(&state.collapsed_topo);
             }
             state.collapsed_topo = state.topo.build_collapsed();
-            state.compute_hidden_sub_topologies();
+            state.compute_visible_nodes();
             graph(&state);
             calculate_positions(&state);
             state.recalculate_layout = false;
@@ -373,24 +334,39 @@ fn void draw_join_groups(State* state)
     }
 }
 
-fn void State.setup_topic_buttons(&self, Topology topo)
+fn void State.setup_source_buttons(&self, Topology topo)
 {
-    // Collect one toggle per unique TOPIC node (cross-sub-topology bridge)
+    // Collect one toggle per SOURCE node, labeled with its topic(s)
     foreach(node: topo.nodes.tvalues()) {
-        if (node.kind != TOPIC) continue;
+        if (node.kind != SOURCE) continue;
 
         bool already_exists;
         foreach(existing_toggle: self.toggles) {
-            if (existing_toggle.topic_name == node.name) {
+            if (existing_toggle.source_name == node.name) {
                 already_exists = true;
                 break;
             }
         }
         if (already_exists) continue;
 
+        // Build label from the SOURCE's topics (e.g. "topicA, topicB")
+        DString label_buf;
+        label_buf.tinit();
+        foreach(i, topic: node.topics) {
+            if (i > 0) label_buf.append(", ");
+            label_buf.append(topic);
+        }
+        // Fallback to node name if no topics
+        ZString label;
+        if (label_buf.len() > 0) {
+            label = label_buf.str_view().zstr_tcopy();
+        } else {
+            label = node.name.zstr_tcopy();
+        }
+
         Toggle* toggle = allocator::new(tmem, Toggle, { 
-            .topic_name = node.name,
-            .label = node.name.zstr_tcopy(), 
+            .source_name = node.name,
+            .label = label,
         });
         toggle.enabled = true;
         self.toggles.push(toggle);
@@ -398,7 +374,7 @@ fn void State.setup_topic_buttons(&self, Topology topo)
     }
 
     Toggle* all = allocator::new(tmem, Toggle, { 
-        .topic_name = "",
+        .source_name = "",
         .label = "ALL".zstr_tcopy(),
         .enabled = true,
     });
@@ -436,7 +412,7 @@ fn void draw_topology_toggles(State* state)
     }
 
     foreach(toggle: state.toggles) {
-        if (rl::checkCollisionPointRec(rl::getMousePosition(), toggle.button) && rl::isMouseButtonPressed(LEFT) && toggle.topic_name.len > 0) {
+        if (rl::checkCollisionPointRec(rl::getMousePosition(), toggle.button) && rl::isMouseButtonPressed(LEFT) && toggle.source_name.len > 0) {
             toggle.enabled = !toggle.enabled;
             state.recalculate_layout = true;
         } else if (all_toggled) {
