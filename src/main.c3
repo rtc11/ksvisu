@@ -7,6 +7,16 @@ import std::collections::list;
 alias NodeList = List{Node*};
 alias TopicNodeMap = HashMap{String, NodeList};
 
+// A reference to a Kotlin source location (file + line + content)
+struct SourceRef {
+    String file;    // relative path to .kt file
+    int line;       // 1-indexed line number
+    String content; // trimmed line content
+}
+
+alias SourceRefList = List{SourceRef};
+alias KotlinIndex = HashMap{String, SourceRefList};
+
 struct Topology {
     HashMap{String, Node*} nodes;
     Allocator alloc;
@@ -24,6 +34,7 @@ struct Node
     List{String} upstream;
     bool is_merged; // true if this node was created by collapsing multiple nodes by topic
     bool is_join;   // true if this node participates in a join (JOINTHIS, JOINOTHER, MERGE, leftjoin)
+    List{SourceRef} source_refs; // Kotlin source locations correlated to this node
     // GUI fields
     int layer; 
     float x;
@@ -45,16 +56,39 @@ enum Kind
 
 fn void main(String[] args)
 {
+    if (args.len < 2) {
+        io::printn("Usage: ksvisu <topology.desc> [<kotlin-src-dir>]");
+        io::printn("");
+        io::printn("Visualize a Kafka Streams topology description file.");
+        io::printn("Optionally provide a Kotlin source directory to correlate");
+        io::printn("topology nodes with their source code locations.");
+        io::printn("");
+        io::printn("Example: ./build/ksvisu resources/abetal.desc ~/code/kotlin/myapp/main");
+        return;
+    }
+
     @pool() 
     {
         Topology topology = { .alloc = tmem };
 
-        if (args.len >= 2) {
-            String[] a = ((String)file::load(tmem, args[1])!!).tsplit("\n");
-            topology.parse_desc(a);
-            topology.link_by_topic();
-            topology.create_store_nodes();
-            topology.tag_join_nodes();
+        String? content_result = (String)file::load(tmem, args[1]);
+        if (catch err = content_result) {
+            io::printfn("Error: could not load file '%s' (%s)", args[1], err);
+            return;
+        }
+        String[] a = content_result.tsplit("\n");
+        topology.parse_desc(a);
+        topology.link_by_topic();
+        topology.create_store_nodes();
+        topology.tag_join_nodes();
+
+        // Scan Kotlin source files and correlate nodes if a source dir is provided
+        KotlinIndex kotlin_index;
+        if (args.len >= 3) {
+            kotlin_index = scan_kotlin_sources(args[2]);
+            if (kotlin_index.count > 0) {
+                correlate_nodes(&topology, &kotlin_index);
+            }
         }
 
         visualize(topology);
@@ -531,6 +565,81 @@ fn void Topology.tag_join_nodes(&self)
             name.contains("leftjoin") ||
             name.contains("outerjoin")) {
             node.is_join = true;
+        }
+    };
+}
+
+// Add a source ref to a node, avoiding duplicates (same file+line).
+fn void Node.add_source_ref(&self, SourceRef ref) {
+    foreach (existing : self.source_refs) {
+        if (existing.file == ref.file && existing.line == ref.line) return;
+    }
+    self.source_refs.push(ref);
+}
+
+// Try to look up a key in the kotlin index and add all matching refs to the node.
+fn void add_refs_for_key(Node* node, KotlinIndex* index, String key) {
+    if (!key || key.len == 0) return;
+    SourceRefList*? refs = index.get_ref(key);
+    if (catch refs) return;
+    foreach (ref : *refs) {
+        node.add_source_ref(ref);
+    }
+}
+
+// Correlate topology nodes with Kotlin source references.
+// For each node, try to match its name, topics, and stores against the index.
+// Also tries stripping known prefixes/suffixes to find the core topic/operator name.
+fn void correlate_nodes(Topology* topo, KotlinIndex* index) {
+    topo.nodes.@each(; String name, Node* node) {
+        // 1. Direct name match
+        add_refs_for_key(node, index, name);
+
+        // 2. Topic matches
+        foreach (topic : node.topics) {
+            add_refs_for_key(node, index, topic);
+        }
+
+        // 3. Store matches
+        foreach (store : node.stores) {
+            add_refs_for_key(node, index, store);
+        }
+
+        // 4. Strip known prefixes to get core name
+        String core = name;
+        if (core.starts_with("consume-")) {
+            core = core[8..];
+            add_refs_for_key(node, index, core);
+        } else if (core.starts_with("ktable-")) {
+            core = core[7..];
+            add_refs_for_key(node, index, core);
+        } else if (core.starts_with("from-")) {
+            core = core[5..];
+            add_refs_for_key(node, index, core);
+        } else if (core.starts_with("SINK:")) {
+            core = core[5..];
+            add_refs_for_key(node, index, core);
+        } else if (core.starts_with("SOURCE:")) {
+            core = core[7..];
+            add_refs_for_key(node, index, core);
+        }
+
+        // 5. Strip repartition suffixes
+        if (core.ends_with("-repartition-filter") ||
+            core.ends_with("-repartition-source") ||
+            core.ends_with("-repartition-sink")) {
+            // Find the last "-repartition-" and strip from there
+            usz? rp_idx = core.rindex_of("-repartition-");
+            if (try idx = rp_idx) {
+                String base = core[..idx - 1];
+                add_refs_for_key(node, index, base);
+            }
+        } else if (core.ends_with("-repartition")) {
+            usz? rp_idx = core.rindex_of("-repartition");
+            if (try idx = rp_idx) {
+                String base = core[..idx - 1];
+                add_refs_for_key(node, index, base);
+            }
         }
     };
 }

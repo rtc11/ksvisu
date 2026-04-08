@@ -198,9 +198,9 @@ fn void visualize(Topology topo)
     };
 
     Fonts fonts = { 
-        .regular = rl::loadFont("/Users/Robin.Tordly/code/c3/ksvisu/resources/JetBrainsMono-Regular.ttf"),
-        .thin = rl::loadFont("/Users/Robin.Tordly/code/c3/ksvisu/resources/JetBrainsMonoNL-Thin.ttf"),
-        .bold = rl::loadFont("/Users/Robin.Tordly/code/c3/ksvisu/resources/JetBrainsMono-Bold.ttf"),
+        .regular = rl::loadFont("resources/JetBrainsMono-Regular.ttf"),
+        .thin = rl::loadFont("resources/JetBrainsMonoNL-Thin.ttf"),
+        .bold = rl::loadFont("resources/JetBrainsMono-Bold.ttf"),
     };
 
     State state = { 
@@ -242,6 +242,7 @@ fn void visualize(Topology topo)
         rl::drawTextEx(state.fonts.regular, string::tformat_zstr("Zoom: %.2f", camera.zoom), {10f, 10f}, 20, 4f, rl::WHITE);
 
         draw_topology_toggles(&state);
+        draw_source_panel(&state);
 
         rl::endDrawing();
     }
@@ -427,6 +428,86 @@ fn void draw_topology_toggles(State* state)
     }
 }
 
+// Draw an info panel showing Kotlin source references for the currently selected node.
+// Positioned in the top-left corner, below the zoom indicator.
+fn void draw_source_panel(State* state)
+{
+    if (state.selected_node == null) return;
+    if (state.selected_node.source_refs.len() == 0) return;
+
+    const float PANEL_X = 10f;
+    const float PANEL_Y = 35f;
+    const float PANEL_PADDING = 10f;
+    const float LINE_HEIGHT = 16f;
+    const float HEADER_HEIGHT = 22f;
+    const int FONT_SIZE = 14;
+    const int HEADER_FONT_SIZE = 16;
+    const float SPACING = 2f;
+    const float MAX_PANEL_WIDTH = 800f;
+
+    Node* node = state.selected_node;
+
+    // Calculate panel dimensions based on content
+    float max_text_width = 0f;
+    // Header: node name
+    Vector2 header_size = rl::measureTextEx(state.fonts.bold, node.name.zstr_tcopy(), HEADER_FONT_SIZE, SPACING);
+    if (header_size.x > max_text_width) max_text_width = header_size.x;
+
+    // Each source ref: "file:line" (bold) + content (thin)
+    foreach (ref : node.source_refs) {
+        ZString loc = string::tformat_zstr("%s:%d", ref.file, ref.line);
+        Vector2 loc_size = rl::measureTextEx(state.fonts.bold, loc, FONT_SIZE, SPACING);
+        if (loc_size.x > max_text_width) max_text_width = loc_size.x;
+
+        ZString content = ref.content.zstr_tcopy();
+        Vector2 content_size = rl::measureTextEx(state.fonts.thin, content, FONT_SIZE, SPACING);
+        if (content_size.x > max_text_width) max_text_width = content_size.x;
+    }
+
+    float panel_width = max_text_width + 2f * PANEL_PADDING;
+    if (panel_width > MAX_PANEL_WIDTH) panel_width = MAX_PANEL_WIDTH;
+
+    // Height: header + separator + (loc_line + content_line + gap) per ref
+    float content_height = HEADER_HEIGHT + 4f; // header + separator gap
+    foreach (ref : node.source_refs) {
+        content_height += LINE_HEIGHT; // file:line
+        content_height += LINE_HEIGHT; // content
+        content_height += 6f;          // gap between refs
+    }
+    float panel_height = content_height + 2f * PANEL_PADDING;
+
+    // Draw panel background
+    rl::Color panel_bg = { 13, 18, 20, 230 };
+    Rectangle panel = { PANEL_X, PANEL_Y, panel_width, panel_height };
+    rl::drawRectangleRounded(panel, 0.02f, 4, panel_bg);
+    rl::drawRectangleRoundedLinesEx(panel, 0.02f, 4, 1f, GOLD);
+
+    float cx = PANEL_X + PANEL_PADDING;
+    float cy = PANEL_Y + PANEL_PADDING;
+
+    // Draw header: node name
+    rl::drawTextEx(state.fonts.bold, node.name.zstr_tcopy(), { cx, cy }, HEADER_FONT_SIZE, SPACING, TEAL);
+    cy += HEADER_HEIGHT;
+
+    // Separator line
+    rl::drawLineEx({ cx, cy }, { PANEL_X + panel_width - PANEL_PADDING, cy }, 1f, GOLD);
+    cy += 4f;
+
+    // Draw each source ref
+    foreach (ref : node.source_refs) {
+        // file:line in bold gold
+        ZString loc = string::tformat_zstr("%s:%d", ref.file, ref.line);
+        rl::drawTextEx(state.fonts.bold, loc, { cx, cy }, FONT_SIZE, SPACING, GOLD);
+        cy += LINE_HEIGHT;
+
+        // Content in thin white
+        ZString content = ref.content.zstr_tcopy();
+        rl::drawTextEx(state.fonts.thin, content, { cx, cy }, FONT_SIZE, SPACING, rl::WHITE);
+        cy += LINE_HEIGHT;
+        cy += 6f;
+    }
+}
+
 const float ZOOM_SPEED = 0.1f;
 const float MIN_ZOOM = 0.1f;
 const float MAX_ZOOM = 4;
@@ -558,7 +639,7 @@ fn void Node.draw(&self, State* state)
 
     ZString name = self.name.zstr_tcopy();
     int font_size = 16;
-    int text_width = rl::measureText(name, font_size);
+    float text_width = rl::measureTextEx(state.fonts.thin, name, font_size, 3f).x;
 
     float label_y;
     if (self.kind == STORE) {
@@ -575,35 +656,24 @@ fn void Node.draw(&self, State* state)
         3f,
         rl::WHITE,
     );
+
+    // Draw sub-labels (stores for stateful processors, topics for sinks/sources)
+    float sub_y = label_y + font_size;
     if (self.kind == PROCESSOR && self.is_stateful()) {
-        rl::drawTextEx(
-            state.fonts.thin,
-            self.stores[0].zstr_tcopy(),
-            { self.x - (text_width / 2f), label_y + font_size },
-            font_size,
-            3f,
-            rl::WHITE,
-        );
+        foreach (store : self.stores) {
+            ZString label = store.zstr_tcopy();
+            float lw = rl::measureTextEx(state.fonts.thin, label, font_size, 3f).x;
+            rl::drawTextEx(state.fonts.thin, label, { self.x - (lw / 2f), sub_y }, font_size, 3f, rl::WHITE);
+            sub_y += font_size;
+        }
     }
-    if (self.kind == SINK && self.has_topics()) {
-        rl::drawTextEx(
-            state.fonts.thin,
-            self.topics[0].zstr_tcopy(),
-            { self.x - (text_width / 2f), label_y + font_size },
-            font_size,
-            3f,
-            rl::WHITE,
-        );
-    }
-    if (self.kind == SOURCE && self.has_topics()) {
-        rl::drawTextEx(
-            state.fonts.thin,
-            self.topics[0].zstr_tcopy(),
-            { self.x - (text_width / 2f), label_y + font_size },
-            font_size,
-            3f,
-            rl::WHITE,
-        );
+    if ((self.kind == SINK || self.kind == SOURCE) && self.has_topics()) {
+        foreach (topic : self.topics) {
+            ZString label = topic.zstr_tcopy();
+            float lw = rl::measureTextEx(state.fonts.thin, label, font_size, 3f).x;
+            rl::drawTextEx(state.fonts.thin, label, { self.x - (lw / 2f), sub_y }, font_size, 3f, rl::WHITE);
+            sub_y += font_size;
+        }
     }
 }
 
