@@ -3,21 +3,9 @@ module ksvisu;
 import std::io;
 import std::collections::map;
 import std::collections::list;
-import ksvisu::color;
-
-faultdef ILLEGAL_ARG, NOT_FOUND;
 
 alias NodeList = List{Node*};
 alias TopicNodeMap = HashMap{String, NodeList};
-
-struct Options
-{
-    bool show_all;
-    bool diff;
-    bool gui;
-    String topo_path;
-    String topo_path_diff;
-}
 
 struct Topology {
     HashMap{String, Node*} nodes;
@@ -45,8 +33,6 @@ struct Node
 
 fn bool Node.is_stateful(&self) => self.stores.len() > 0;
 fn bool Node.has_topics(&self) => self.topics.len() > 0;
-fn bool Node.has_downstreams(&self) => self.downstream.len() > 0;
-fn bool Node.has_upstreams(&self) => self.upstream.len() > 0;
 
 enum Kind
 {
@@ -61,175 +47,20 @@ fn void main(String[] args)
 {
     @pool() 
     {
-        Options opts = cli(args)!!;
-
-        String[] a = ((String)file::load(tmem, opts.topo_path)!!).tsplit("\n");
         Topology topology = { .alloc = tmem };
-        topology.parse_desc(a);
-        topology.link_by_topic();
-        topology.create_store_nodes();
-        topology.tag_join_nodes();
 
-        if (opts.gui) {
-            visualize(topology);
-            return;
-        } 
-        switch (opts.diff) {
-            case true: 
-                String[] b = ((String)file::load(tmem, opts.topo_path_diff)!!).tsplit("\n");
-                Topology other = { .alloc = tmem };
-                other.parse_desc(b);
-                other.link_by_topic();
-                other.create_store_nodes();
-                other.tag_join_nodes();
-                topology.diff(other, opts);   
-            case false: 
-                topology.print(opts);   
+        if (args.len >= 2) {
+            String[] a = ((String)file::load(tmem, args[1])!!).tsplit("\n");
+            topology.parse_desc(a);
+            topology.link_by_topic();
+            topology.create_store_nodes();
+            topology.tag_join_nodes();
         }
+
+        visualize(topology);
     };
 }
 
-fn Options? cli(String[] args)
-{
-
-    if (args.len < 2) {
-        io::printfn("Usage: %s <topology.desc> <options>", args[0]);
-        return ILLEGAL_ARG?;
-    } 
-    Options opts = { .topo_path = args[1] };
-        if (args.contains("-a")) {
-            opts.show_all = true; 
-        }
-        if (args.contains("-d")) {
-            opts.diff = true; 
-            opts.topo_path_diff = args[args.index_at("-d")!! + 1]; 
-        } 
-        if (args.contains("-g")) {
-            opts.gui = true;
-        }
-    return opts;
-}
-
-fn void Topology.diff(&self, Topology other, Options opts)
-{
-    io::printfn("%s %s %s", "REMOVED".bg(color::RED).fg(color::BLACK), "ADDED".bg(color::GREEN).fg(color::BLACK), "CHANGED".bg(color::PINK).fg(color::BLACK));
-
-    usz name_len_max;
-    self.nodes.@each(; String key, Node* node) {
-        if (key.len > name_len_max) {
-            if (opts.show_all) {
-                name_len_max = key.len;
-            } else if (node.is_stateful()) {
-                name_len_max = key.len;
-            }
-        }
-    };
-    other.nodes.@each(; String key, Node* node) {
-        if (key.len > name_len_max) {
-            if (opts.show_all) {
-                name_len_max = key.len;
-            } else if (node.is_stateful()) {
-                name_len_max = key.len;
-            }
-        }
-    };
-    name_len_max += 5;
-
-    Node*[] nodes = self.nodes.tvalues();
-    Node*[] other_nodes = other.nodes.tvalues();
-    foreach(node: other_nodes) {
-        if (!self.nodes.has_key(node.name)) continue;
-        if (node.is_stateful()) {
-            usz padding = name_len_max + 2;
-            Node* old_node = self.nodes.get(node.name)!!;
-            // Compare all stores; if any differ, skip (handled in the changed section below)
-            bool stores_match = (node.stores.len() == old_node.stores.len());
-            if (stores_match) {
-                for (usz si = 0; si < node.stores.len(); si++) {
-                    if (node.stores[si] != old_node.stores[si]) {
-                        stores_match = false;
-                        break;
-                    }
-                }
-            }
-            if (!stores_match) continue;
-            io::printfn("%-10s %-*s %s", node.kind, padding, color::gray(node.name), node.stores);
-        }
-        if (opts.show_all) {
-            if (node.has_topics()) io::printfn("%-10s %-*s %s", node.kind, name_len_max + 34, node.name, node.topics);
-            if (node.has_downstreams()) io::printfn("%-10s %-*s --> %s", node.kind, name_len_max + 30, node.name, node.downstream);
-            if (node.has_upstreams()) io::printfn("%-10s %-*s <-- %s", node.kind, name_len_max + 30, node.name, node.upstream);
-        }
-    }
-    foreach(node: other_nodes) {
-        if (!self.nodes.has_key(node.name)) continue;
-        if (node.is_stateful()) {
-            usz padding = name_len_max + 2;
-            Node* old_node = self.nodes.get(node.name)!!;
-            bool stores_match = (node.stores.len() == old_node.stores.len());
-            if (stores_match) {
-                for (usz si = 0; si < node.stores.len(); si++) {
-                    if (node.stores[si] != old_node.stores[si]) {
-                        stores_match = false;
-                        break;
-                    }
-                }
-            }
-            if (stores_match) continue;
-            io::printfn("%-10s %-*s %s", node.kind, padding - 24, node.name, color::pink(string::tformat("%s", node.stores)));
-        }
-    }
-    foreach(node: nodes) {
-        if (other.nodes.has_key(node.name)) continue;
-        usz padding = name_len_max;
-        if (node.is_stateful()) io::printfn("%-10s %-*s %s", node.kind, padding, color::red(node.name), node.stores);
-        if (opts.show_all) {
-            if (node.has_topics()) io::printfn("%-10s %-*s %s", node.kind, name_len_max + 34, node.name, node.topics);
-            if (node.has_downstreams()) io::printfn("%-10s %-*s --> %s", node.kind, name_len_max + 30, node.name, node.downstream);
-            if (node.has_upstreams()) io::printfn("%-10s %-*s <-- %s", node.kind, name_len_max + 30, node.name, node.upstream);
-        }
-    }
-    foreach(node: other_nodes) {
-        if (self.nodes.has_key(node.name)) continue;
-        usz padding = name_len_max + 2;
-        if (node.is_stateful()) io::printfn("%-10s %-*s %s", node.kind, padding, color::green(node.name), node.stores);
-        if (opts.show_all) {
-            if (node.has_topics()) io::printfn("%-10s %-*s %s", node.kind, name_len_max + 34, node.name, node.topics);
-            if (node.has_downstreams()) io::printfn("%-10s %-*s --> %s", node.kind, name_len_max + 30, node.name, node.downstream);
-            if (node.has_upstreams()) io::printfn("%-10s %-*s <-- %s", node.kind, name_len_max + 30, node.name, node.upstream);
-        }
-    }
-}
-
-fn bool String[].contains(&self, String needle)
-{
-    foreach(str: self) if (str == needle) return true;
-    return false;
-}
-
-fn usz? String[].index_at(&self, String needle)
-{
-    foreach(i, str: self) if (str == needle) return i;
-    return NOT_FOUND?;
-}
-
-fn void Topology.print(&self, Options opts)
-{
-    self.nodes.@each(; String name, Node* node) {
-        if (node.is_stateful()) {
-            io::printfn("%-10s %-86s %s", node.kind, color::red(node.name), node.stores);
-        }
-        if (node.has_topics() && opts.show_all) {
-            io::printfn("%-10s %-64s %s", node.kind, node.name, node.topics);
-        }
-        if (node.has_downstreams() && opts.show_all) {
-            io::printfn("%-10s %-60s --> %s", node.kind, node.name, node.downstream);
-        }
-        if (node.has_upstreams() && opts.show_all) {
-            io::printfn("%-10s %-60s <-- %s", node.kind, node.name, node.upstream);
-        }
-    };
-}
 
 fn void Topology.parse_desc(&self, String[] input)
 {
