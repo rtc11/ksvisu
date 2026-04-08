@@ -3,7 +3,7 @@
   "warnings":  [ "no-unused" ],
   "dependency-search-paths":  [ "lib" ],
   "dependencies":  [ "raylib55" ],
-  "authors":  [ "Robin Tordly <robin.tordly@gmail.com>" ],
+  "authors":  [ "rtc11" ],
   "version": "0.1.0",
   "sources":  [ "src/**" ],
   "test-sources":  [ "test/**" ],
