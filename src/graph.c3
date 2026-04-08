@@ -14,6 +14,9 @@ const float NODE_RADIUS = 50;
 const float NODE_PADDING = 50;
 const float MARGIN = NODE_PADDING;
 const float NODE_VERTICAL_STEP = (2 * NODE_RADIUS) + NODE_PADDING;
+const int LONG_EDGE_LAYER_THRESHOLD = 2;   // edges spanning more layers than this get curved
+const float BEZIER_CURVE_OFFSET = 150f;    // base perpendicular offset for bezier control point
+const float MAX_BEZIER_OFFSET = 600f;      // cap so extremely long edges don't bow too far
 
 const rl::Color BG = { 20, 28, 33, 255};
 const rl::Color BODY = { 13, 18, 20, 255};
@@ -23,7 +26,11 @@ const rl::Color PURPLE = { 181, 33, 127, 255};
 const rl::Color BLUE = { 50, 100, 200, 255};
 const rl::Color GOLD = { 218, 165, 35, 255};
 const rl::Color HIGHLIGHT_YELLOW = { 255, 255, 0, 255};
+const rl::Color HIGHLIGHT_DIM = { 255, 255, 0, 100};   // softer glow for transitive neighbors
 const rl::Color SILVER = {192, 192, 192, 255};
+const rl::Color TEAL = { 69, 200, 220, 255};
+const rl::Color ORANGE = { 255, 165, 0, 255};
+const rl::Color JOIN_BG = { 255, 165, 0, 40};  // translucent orange for join group boxes
 
 alias Nodes = List{Node*};
 alias NodesByLayer = List{Nodes};
@@ -37,7 +44,9 @@ struct Fonts {
 struct State
 {
     Topology topo;
+    Topology collapsed_topo;     // always-active merged topology (sinks/sources collapsed by topic)
     List{Toggle*} toggles;
+    List{int} hidden_sub_topologies; // computed set of sub-topology IDs currently hidden
     Fonts fonts;
     usz max_layer;           // max layers in the (enabled) sub-topologies
     bool is_panning;         // when left mouse is pressed and screen is dragged
@@ -45,18 +54,173 @@ struct State
     bool recalculate_layout; // when to recalculate graph and calculate_positions
     float max_node_width;    // max horizontal space required by a node's label
     Node* selected_node;
+    HashMap{String, bool} highlighted_nodes; // transitive upstream + downstream of selected node
 }
 
 
 struct Toggle
 {
     ZString label;
-    int id;
+    String topic_name;  // topic name for matching against TOPIC nodes ("" for ALL button)
     Rectangle button;
     bool enabled;
 }
 
-fn bool Toggle.less(&self, Toggle* other) => self.id < other.id; // used in quicksort
+fn bool Toggle.less(&self, Toggle* other) => self.label < other.label; // used in quicksort
+
+// Check if a node is visible based on computed hidden sub-topologies.
+// A node is hidden if its sub_topology is in the hidden set.
+// TOPIC nodes are hidden if their upstream sub_topology is hidden, or if
+// their own toggle is disabled (and the upstream is not hidden — that case
+// is already handled by the cascade).
+fn bool State.is_node_visible(&self, Node* node) {
+    if (self.is_sub_topo_hidden(node.sub_topology)) return false;
+    // For TOPIC nodes: also check if this specific topic toggle is disabled
+    if (node.kind == TOPIC) {
+        foreach (toggle : self.toggles) {
+            if (toggle.topic_name == node.name) {
+                return toggle.enabled;
+            }
+        }
+    }
+    return true;
+}
+
+fn bool State.is_sub_topo_hidden(&self, int sub_topo) {
+    foreach (h : self.hidden_sub_topologies) {
+        if (h == sub_topo) return true;
+    }
+    return false;
+}
+
+// Compute the transitive set of highlighted nodes (all upstream ancestors
+// and all downstream descendants) reachable from the currently selected node.
+fn void State.compute_highlighted_nodes(&self) {
+    self.highlighted_nodes.clear();
+    if (self.selected_node == null) return;
+
+    Topology* topo = self.active_topo();
+    self.highlighted_nodes.set(self.selected_node.name, true);
+
+    // BFS downstream (descendants)
+    List{String} queue;
+    queue.tinit();
+    foreach (ds : self.selected_node.downstream) {
+        queue.push(ds);
+    }
+    while (queue.len() > 0) {
+        String name = queue.pop()!!;
+        if (self.highlighted_nodes.has_key(name)) continue;
+        self.highlighted_nodes.set(name, true);
+        Node*? node = topo.nodes.get(name);
+        if (catch node) continue;
+        foreach (ds : node.downstream) {
+            if (!self.highlighted_nodes.has_key(ds)) {
+                queue.push(ds);
+            }
+        }
+    }
+
+    // BFS upstream (ancestors)
+    foreach (us : self.selected_node.upstream) {
+        queue.push(us);
+    }
+    while (queue.len() > 0) {
+        String name = queue.pop()!!;
+        if (self.highlighted_nodes.has_key(name)) continue;
+        self.highlighted_nodes.set(name, true);
+        Node*? node = topo.nodes.get(name);
+        if (catch node) continue;
+        foreach (us : node.upstream) {
+            if (!self.highlighted_nodes.has_key(us)) {
+                queue.push(us);
+            }
+        }
+    }
+}
+
+// Compute which sub-topologies are hidden based on topic toggle states.
+// Algorithm:
+//   1. For each disabled topic toggle, the TOPIC node's sub_topology_secondary
+//      (the downstream sub-topology) is a candidate for hiding.
+//   2. A sub-topology is hidden only if ALL topic paths leading into it are blocked
+//      (either the toggle is disabled, or the upstream sub-topology is itself hidden).
+//   3. Fixed-point iteration: cascade through the graph until stable.
+fn void State.compute_hidden_sub_topologies(&self) {
+    Topology* topo = self.active_topo();
+    self.hidden_sub_topologies.clear();
+
+    // Collect all TOPIC nodes from the topology
+    List{Node*} topic_nodes;
+    topo.nodes.@each(; String name, Node* node) {
+        if (node.kind == TOPIC) {
+            topic_nodes.push(node);
+        }
+    };
+
+    // Fixed-point iteration
+    bool changed = true;
+    while (changed) {
+        changed = false;
+
+        foreach (topic_node : topic_nodes) {
+            int downstream_sub = topic_node.sub_topology_secondary;
+            if (downstream_sub < 0) continue;
+            // Skip if already hidden
+            if (self.is_sub_topo_hidden(downstream_sub)) continue;
+
+            // Check if the upstream sub-topology of this TOPIC node is hidden
+            bool upstream_hidden = self.is_sub_topo_hidden(topic_node.sub_topology);
+
+            // Find this topic's toggle
+            bool toggle_disabled = false;
+            foreach (toggle : self.toggles) {
+                if (toggle.topic_name == topic_node.name) {
+                    toggle_disabled = !toggle.enabled;
+                    break;
+                }
+            }
+
+            // This path into downstream_sub is blocked if toggle is off OR upstream is hidden
+            bool this_path_blocked = toggle_disabled || upstream_hidden;
+            if (!this_path_blocked) continue;
+
+            // Check if ALL paths into downstream_sub are blocked
+            bool all_paths_blocked = true;
+            foreach (other_topic : topic_nodes) {
+                if (other_topic.sub_topology_secondary != downstream_sub) continue;
+
+                bool other_upstream_hidden = self.is_sub_topo_hidden(other_topic.sub_topology);
+                bool other_toggle_disabled = false;
+                foreach (toggle : self.toggles) {
+                    if (toggle.topic_name == other_topic.name) {
+                        other_toggle_disabled = !toggle.enabled;
+                        break;
+                    }
+                }
+
+                if (!other_toggle_disabled && !other_upstream_hidden) {
+                    all_paths_blocked = false;
+                    break;
+                }
+            }
+
+            if (all_paths_blocked) {
+                self.hidden_sub_topologies.push(downstream_sub);
+                changed = true;
+            }
+        }
+    }
+}
+
+// Return the active topology (always the collapsed/merged version).
+fn Topology* State.active_topo(&self) {
+    return &self.collapsed_topo;
+}
+
+fn bool State.is_highlighted(&self, Node* node) {
+    return self.highlighted_nodes.has_key(node.name);
+}
 
 fn void visualize(Topology topo)
 {
@@ -84,7 +248,7 @@ fn void visualize(Topology topo)
         .recalculate_layout = true,
     };
 
-    state.setup_sub_topology_buttons(topo);
+    state.setup_topic_buttons(topo);
 
     while (!rl::windowShouldClose()) {
         if (rl::isKeyPressed(rl::KEY_ENTER)) break;
@@ -95,6 +259,12 @@ fn void visualize(Topology topo)
         camera.handle_input(&state);
 
         if (state.recalculate_layout) {
+            // Restore edges from previous collapse before rebuilding
+            if (state.collapsed_topo.nodes.count > 0) {
+                state.topo.restore_edges(&state.collapsed_topo);
+            }
+            state.collapsed_topo = state.topo.build_collapsed();
+            state.compute_hidden_sub_topologies();
             graph(&state);
             calculate_positions(&state);
             state.recalculate_layout = false;
@@ -119,88 +289,138 @@ fn void visualize(Topology topo)
 
 fn void draw_subtopology(State* state)
 {
-    foreach (node: state.topo.nodes.tvalues()) {
-        bool node_is_visible;
+    Topology* topo = state.active_topo();
 
-        foreach(toggle : state.toggles) {
-            if (toggle.id == node.sub_topology && toggle.enabled) {
-                node_is_visible = true;
-                break;
-            }
-        }
+    // Draw join-group bounding boxes (behind everything)
+    draw_join_groups(state);
 
-        if (!node_is_visible) continue;
+    // Draw edges
+    foreach (node: topo.nodes.tvalues()) {
+        if (!state.is_node_visible(node)) continue;
 
         foreach(downstream_name: node.downstream) {
-            Node*? downstream = state.topo.nodes[downstream_name];
+            Node*? downstream = topo.nodes[downstream_name];
             if (catch downstream) continue;
 
-            bool downstream_is_visible;
-            foreach(toggle: state.toggles) {
-                if (toggle.id == downstream.sub_topology && toggle.enabled) {
-                    downstream_is_visible = true;  
-                    break;
-                }
-            }
-
-            if (downstream_is_visible) {
+            if (state.is_node_visible(downstream)) {
                 node.connect(*downstream, state);
             }
         }
     };
 
-    foreach (node: state.topo.nodes.tvalues()) {
-        bool should_draw;
-        foreach(toggle : state.toggles) {
-            if (toggle.id == node.sub_topology && toggle.enabled) {
-                should_draw = true;
-                break;
-            }
-        }
-        if (should_draw) {
+    // Draw nodes
+    foreach (node: topo.nodes.tvalues()) {
+        if (state.is_node_visible(node)) {
             node.draw(state);
         }
     }
 }
 
-fn void State.setup_sub_topology_buttons(&self, Topology topo)
+// Draw translucent bounding boxes behind clusters of join-related nodes.
+// A join group = all join nodes (is_join==true) that share a common store via
+// their STORE node connections. We group by collecting each STORE node's upstream
+// processors that have is_join, then draw a box around the group + the store node.
+fn void draw_join_groups(State* state)
 {
+    Topology* topo = state.active_topo();
+    const float PAD = 20f;
+
+    // Find STORE nodes that connect to join processors
+    foreach (node: topo.nodes.tvalues()) {
+        if (node.kind != STORE) continue;
+        if (!state.is_node_visible(node)) continue;
+
+        // Collect all visible join processors connected to this store
+        float min_x = node.x;
+        float max_x = node.x;
+        float min_y = node.y;
+        float max_y = node.y;
+        usz join_count = 0;
+
+        foreach (us_name : node.upstream) {
+            Node*? proc = topo.nodes.get(us_name);
+            if (catch proc) continue;
+            if (!state.is_node_visible(proc)) continue;
+            if (!proc.is_join) continue;
+            join_count++;
+            if (proc.x - NODE_RADIUS < min_x) min_x = proc.x - NODE_RADIUS;
+            if (proc.x + NODE_RADIUS > max_x) max_x = proc.x + NODE_RADIUS;
+            if (proc.y - NODE_RADIUS < min_y) min_y = proc.y - NODE_RADIUS;
+            if (proc.y + NODE_RADIUS > max_y) max_y = proc.y + NODE_RADIUS;
+        }
+
+        if (join_count < 1) continue;
+
+        // Expand bounds to include the store node rectangle
+        float store_left = node.x - STORE_RECT_W / 2f;
+        float store_right = node.x + STORE_RECT_W / 2f;
+        float store_top = node.y - STORE_RECT_H / 2f;
+        float store_bottom = node.y + STORE_RECT_H / 2f;
+        if (store_left < min_x) min_x = store_left;
+        if (store_right > max_x) max_x = store_right;
+        if (store_top < min_y) min_y = store_top;
+        if (store_bottom > max_y) max_y = store_bottom;
+
+        // Draw translucent bounding box with padding
+        Rectangle box = {
+            min_x - PAD,
+            min_y - PAD,
+            (max_x - min_x) + 2f * PAD,
+            (max_y - min_y) + 2f * PAD,
+        };
+        rl::drawRectangleRounded(box, 0.1f, 4, JOIN_BG);
+        rl::drawRectangleRoundedLinesEx(box, 0.1f, 4, 1f, ORANGE);
+    }
+}
+
+fn void State.setup_topic_buttons(&self, Topology topo)
+{
+    // Collect one toggle per unique TOPIC node (cross-sub-topology bridge)
     foreach(node: topo.nodes.tvalues()) {
-        int sub_id = node.sub_topology; 
+        if (node.kind != TOPIC) continue;
+
         bool already_exists;
         foreach(existing_toggle: self.toggles) {
-            if (existing_toggle.id == sub_id) {
+            if (existing_toggle.topic_name == node.name) {
                 already_exists = true;
                 break;
             }
         }
-        if(already_exists) continue;
+        if (already_exists) continue;
 
         Toggle* toggle = allocator::new(tmem, Toggle, { 
-            .id = node.sub_topology,
-            .label = string::tformat_zstr("%d", node.sub_topology), 
+            .topic_name = node.name,
+            .label = node.name.zstr_tcopy(), 
         });
-        // if (sub_id == 3) toggle.enabled = true;
         toggle.enabled = true;
         self.toggles.push(toggle);
         quicksort(&self.toggles);
     }
 
     Toggle* all = allocator::new(tmem, Toggle, { 
-        .id = 1000,
+        .topic_name = "",
         .label = "ALL".zstr_tcopy(),
         .enabled = true,
     });
     self.toggles.push(all);
 
-    const float BUTTON_WIDTH = 60;
-    const float BUTTON_HEIGHT = 30;
-    const float BUTTON_SPACING = 35;
+    // Measure maximum label width for dynamic button sizing
+    float max_label_width = 40f; // minimum for "ALL"
+    foreach(toggle: self.toggles) {
+        Vector2 text_size = rl::measureTextEx(self.fonts.bold, toggle.label, 14, 2f);
+        if (text_size.x > max_label_width) {
+            max_label_width = text_size.x;
+        }
+    }
+
+    float button_width = max_label_width + 20f; // 10px padding each side
+    const float BUTTON_HEIGHT = 25;
+    const float BUTTON_SPACING = 28;
 
     foreach(i, toggle: self.toggles) {
-        float x_pos = SCREEN_WIDTH - MARGIN - BUTTON_WIDTH;
+        float x_pos = SCREEN_WIDTH - MARGIN - button_width;
         float y_pos = SCREEN_HEIGHT - MARGIN - ((i+1f) * BUTTON_SPACING);
-        toggle.button = { x_pos, y_pos, BUTTON_WIDTH, BUTTON_HEIGHT };
+        toggle.button = { x_pos, y_pos, button_width, BUTTON_HEIGHT };
     }
 }
 
@@ -208,25 +428,25 @@ fn void State.setup_sub_topology_buttons(&self, Topology topo)
 fn void draw_topology_toggles(State* state)
 {
     Toggle* all = state.toggles.last()!!;
-    bool all_toggeled;
+    bool all_toggled;
     if (rl::checkCollisionPointRec(rl::getMousePosition(), all.button) && rl::isMouseButtonPressed(LEFT)) {
-        all_toggeled = true;
+        all_toggled = true;
         all.enabled = !all.enabled;
         state.recalculate_layout = true;
     }
 
     foreach(toggle: state.toggles) {
-        if (rl::checkCollisionPointRec(rl::getMousePosition(), toggle.button) && rl::isMouseButtonPressed(LEFT) && toggle.id != 1000) {
+        if (rl::checkCollisionPointRec(rl::getMousePosition(), toggle.button) && rl::isMouseButtonPressed(LEFT) && toggle.topic_name.len > 0) {
             toggle.enabled = !toggle.enabled;
             state.recalculate_layout = true;
-        } else if (all_toggeled) {
+        } else if (all_toggled) {
             toggle.enabled = all.enabled;
         }
     }
 
     foreach(toggle: state.toggles) {
         rl::drawRectangleRec(toggle.button, toggle.enabled ? GREEN : RED);
-        rl::drawTextEx(state.fonts.bold, toggle.label, {toggle.button.x + 20, toggle.button.y + 5}, 20, 4f, rl::BLACK);
+        rl::drawTextEx(state.fonts.bold, toggle.label, {toggle.button.x + 5, toggle.button.y + 5}, 14, 2f, rl::BLACK);
         rl::drawRectangleLinesEx(toggle.button, 1, rl::DARKGRAY);
     }
 }
@@ -273,65 +493,108 @@ fn void Camera2D.handle_input(&self, State* state)
 {
     Vector2 mouse_world = rl::getScreenToWorld2D(rl::getMousePosition(), *self);
     Node* hovered = null;
+    Topology* topo = state.active_topo();
 
-    foreach (node: state.topo.nodes.tvalues()) {
-        bool is_visible;
-        foreach (toggle : state.toggles) {
-            if (toggle.id == node.sub_topology && toggle.enabled) {
-                is_visible = true;
+    foreach (node: topo.nodes.tvalues()) {
+        if (!state.is_node_visible(node)) continue;
+
+        if (node.kind == STORE) {
+            // Hit test for rectangular STORE nodes
+            Rectangle rect = { node.x - STORE_RECT_W/2f, node.y - STORE_RECT_H/2f, STORE_RECT_W, STORE_RECT_H };
+            if (rl::checkCollisionPointRec(mouse_world, rect)) {
+                hovered = node;
                 break;
             }
-        }
-
-        if (!is_visible) continue;
-
-        Vector2 node_center = { node.x, node.y };
-
-        if (rl::checkCollisionPointCircle(mouse_world, node_center, NODE_RADIUS)) {
-            hovered = node;
-            break;
+        } else {
+            Vector2 node_center = { node.x, node.y };
+            if (rl::checkCollisionPointCircle(mouse_world, node_center, NODE_RADIUS)) {
+                hovered = node;
+                break;
+            }
         }
     }
 
     if (rl::isMouseButtonPressed(LEFT)) {
         if (hovered) {
             state.selected_node = hovered;
+            state.compute_highlighted_nodes();
         } else if (!state.is_panning) {
             state.selected_node = null;
+            state.compute_highlighted_nodes();
         }
     }
 }
 
 const float GLOW_THICKNESS = 4f;
+const float STORE_RECT_W = 80f;   // width of STORE node rectangles
+const float STORE_RECT_H = 40f;   // height of STORE node rectangles
 
 fn void Node.draw(&self, State* state)
 {
     rl::Color color;
     switch (self.kind) {
         case SOURCE: color = GREEN;
-        case PROCESSOR: color = self.is_stateful() ? RED : PURPLE;  
+        case PROCESSOR: 
+            if (self.is_join) {
+                color = ORANGE;
+            } else {
+                color = self.is_stateful() ? RED : PURPLE;
+            }
         case SINK: color = BLUE;
+        case TOPIC: color = TEAL;
+        case STORE: color = SILVER;
     }
-    rl::drawCircle((int)self.x, (int)self.y, NODE_RADIUS, color);
 
     bool is_selected = (self == state.selected_node);
-    float radius =  NODE_RADIUS;
+    bool is_in_highlight_set = !is_selected && state.is_highlighted(self);
+    rl::Color glow_color = is_selected ? HIGHLIGHT_YELLOW : HIGHLIGHT_DIM;
     Vector2 center = { self.x, self.y };
 
-    if (is_selected) {
-        rl::drawCircleV(center, radius + GLOW_THICKNESS, HIGHLIGHT_YELLOW);
-    }
+    if (self.kind == STORE) {
+        // Draw STORE nodes as rounded rectangles
+        float rw = STORE_RECT_W;
+        float rh = STORE_RECT_H;
+        Rectangle rect = { self.x - rw/2f, self.y - rh/2f, rw, rh };
 
-    rl::drawCircleV(center, radius, color);
-    rl::drawCircleLinesV(center, radius, GOLD);
+        if (is_selected || is_in_highlight_set) {
+            Rectangle glow_rect = { rect.x - GLOW_THICKNESS, rect.y - GLOW_THICKNESS, rect.width + 2*GLOW_THICKNESS, rect.height + 2*GLOW_THICKNESS };
+            rl::drawRectangleRounded(glow_rect, 0.3f, 4, glow_color);
+        }
+        rl::drawRectangleRounded(rect, 0.3f, 4, color);
+        rl::drawRectangleRoundedLinesEx(rect, 0.3f, 4, 2f, GOLD);
+    } else {
+        // Draw regular nodes as circles
+        rl::drawCircle((int)self.x, (int)self.y, NODE_RADIUS, color);
+
+        float radius = NODE_RADIUS;
+        if (is_selected || is_in_highlight_set) {
+            rl::drawCircleV(center, radius + GLOW_THICKNESS, glow_color);
+        }
+
+        rl::drawCircleV(center, radius, color);
+        rl::drawCircleLinesV(center, radius, GOLD);
+
+        // Double ring for merged nodes (collapsed by topic)
+        if (self.is_merged) {
+            rl::drawCircleLinesV(center, radius + 4f, GOLD);
+        }
+    }
 
     ZString name = self.name.zstr_tcopy();
     int font_size = 16;
     int text_width = rl::measureText(name, font_size);
+
+    float label_y;
+    if (self.kind == STORE) {
+        label_y = self.y + STORE_RECT_H / 2f;
+    } else {
+        label_y = self.y + NODE_RADIUS;
+    }
+
     rl::drawTextEx(
         state.fonts.thin,
         name,
-        { self.x - (text_width / 2f), self.y + NODE_RADIUS },
+        { self.x - (text_width / 2f), label_y },
         font_size,
         3f,
         rl::WHITE,
@@ -340,7 +603,7 @@ fn void Node.draw(&self, State* state)
         rl::drawTextEx(
             state.fonts.thin,
             self.stores[0].zstr_tcopy(),
-            { self.x - (text_width / 2f), self.y + NODE_RADIUS + font_size },
+            { self.x - (text_width / 2f), label_y + font_size },
             font_size,
             3f,
             rl::WHITE,
@@ -350,7 +613,7 @@ fn void Node.draw(&self, State* state)
         rl::drawTextEx(
             state.fonts.thin,
             self.topics[0].zstr_tcopy(),
-            { self.x - (text_width / 2f), self.y + NODE_RADIUS + font_size },
+            { self.x - (text_width / 2f), label_y + font_size },
             font_size,
             3f,
             rl::WHITE,
@@ -360,7 +623,7 @@ fn void Node.draw(&self, State* state)
         rl::drawTextEx(
             state.fonts.thin,
             self.topics[0].zstr_tcopy(),
-            { self.x - (text_width / 2f), self.y + NODE_RADIUS + font_size },
+            { self.x - (text_width / 2f), label_y + font_size },
             font_size,
             3f,
             rl::WHITE,
@@ -370,6 +633,17 @@ fn void Node.draw(&self, State* state)
 
 const float ARROW_SIZE = 15; 
 const float GAP_DIST = NODE_RADIUS + ARROW_SIZE;
+const float DASH_LENGTH = 10f;
+const float DASH_GAP = 8f;
+
+// Get the edge offset (radius for circles, half-rect for store rectangles)
+fn float Node.edge_radius(&self) {
+    if (self.kind == STORE) {
+        // Approximate: use half the diagonal of the rectangle
+        return math::max(STORE_RECT_W, STORE_RECT_H) / 2f;
+    }
+    return NODE_RADIUS;
+}
 
 fn void Node.connect(&self, Node other, State* state)
 {
@@ -378,16 +652,92 @@ fn void Node.connect(&self, Node other, State* state)
     Vector2 dir_vec = rl::vector2Subtract(center_end, center_start);
     float len = rl::vector2Length(dir_vec);
     if (len < 1f) return;
-    bool is_highlighted = (state.selected_node == self || state.selected_node == &other);
-    rl::Color color = is_highlighted ? HIGHLIGHT_YELLOW : GOLD;
-    float thickness = is_highlighted ? 7f : 5f;
+    bool is_highlighted = state.is_highlighted(self) && state.is_highlighted(&other);
+    bool is_store_edge = (self.kind == STORE || other.kind == STORE);
 
-    Vector2 start_pos = rl::vector2Lerp(center_start, center_end, NODE_RADIUS / len);
-    Vector2 arrow_tip = rl::vector2Lerp(center_start, center_end, 1f - (NODE_RADIUS / len));
-    Vector2 arrow_base = rl::vector2Lerp(center_start, center_end, (1f - (NODE_RADIUS / len)) - (ARROW_SIZE / len));
+    rl::Color color;
+    float thickness;
+    if (is_highlighted) {
+        color = HIGHLIGHT_YELLOW;
+        thickness = 7f;
+    } else if (is_store_edge) {
+        color = ORANGE;
+        thickness = 3f;
+    } else {
+        color = GOLD;
+        thickness = 5f;
+    }
 
-    rl::drawLineEx(start_pos, arrow_base, thickness, color);
-    draw_arrowhead(arrow_tip, arrow_base, ARROW_SIZE, color);
+    float start_radius = self.edge_radius();
+    float end_radius = other.edge_radius();
+
+    int layer_diff = math::abs(other.layer - self.layer);
+    bool is_long_edge = (layer_diff > LONG_EDGE_LAYER_THRESHOLD) && !is_store_edge;
+
+    if (is_store_edge) {
+        // Dashed straight line (no arrowhead) for store relationships
+        Vector2 start_pos = rl::vector2Lerp(center_start, center_end, start_radius / len);
+        Vector2 end_pos = rl::vector2Lerp(center_start, center_end, 1f - (end_radius / len));
+        draw_dashed_line(start_pos, end_pos, thickness, color);
+    } else if (is_long_edge) {
+        // Curved bezier edge for long-span connections
+        Vector2 midpoint = rl::vector2Lerp(center_start, center_end, 0.5f);
+        // Perpendicular unit vector (pointing "upward" in screen coords, i.e. negative Y)
+        Vector2 perp = { -dir_vec.y / len, dir_vec.x / len };
+        // Scale offset with layer difference, but cap it
+        float offset = BEZIER_CURVE_OFFSET * (float)(layer_diff - LONG_EDGE_LAYER_THRESHOLD);
+        offset = math::min(offset, MAX_BEZIER_OFFSET);
+        // Choose curve direction: bow upward (negative Y direction)
+        // If perp.y > 0, flip it so the curve always bows upward
+        if (perp.y > 0f) {
+            perp = { -perp.x, -perp.y };
+        }
+        Vector2 control = rl::vector2Add(midpoint, rl::vector2Scale(perp, offset));
+
+        // Tangent at t=0 of quadratic bezier: 2*(C - P0)
+        Vector2 tangent_start_raw = rl::vector2Subtract(control, center_start);
+        float tangent_start_len = rl::vector2Length(tangent_start_raw);
+        // Tangent at t=1 of quadratic bezier: 2*(P1 - C)
+        Vector2 tangent_end_raw = rl::vector2Subtract(center_end, control);
+        float tangent_end_len = rl::vector2Length(tangent_end_raw);
+
+        if (tangent_start_len < 1f || tangent_end_len < 1f) return;
+
+        Vector2 tangent_start_unit = rl::vector2Scale(tangent_start_raw, 1f / tangent_start_len);
+        Vector2 tangent_end_unit = rl::vector2Scale(tangent_end_raw, 1f / tangent_end_len);
+
+        // Offset start/end from node edges along the bezier tangent direction
+        Vector2 start_pos = rl::vector2Add(center_start, rl::vector2Scale(tangent_start_unit, start_radius));
+        Vector2 arrow_tip = rl::vector2Subtract(center_end, rl::vector2Scale(tangent_end_unit, end_radius));
+        Vector2 arrow_base = rl::vector2Subtract(center_end, rl::vector2Scale(tangent_end_unit, end_radius + ARROW_SIZE));
+
+        rl::drawSplineSegmentBezierQuadratic(start_pos, control, arrow_base, thickness, color);
+        draw_arrowhead(arrow_tip, arrow_base, ARROW_SIZE, color);
+    } else {
+        // Straight line for short-span edges
+        Vector2 start_pos = rl::vector2Lerp(center_start, center_end, start_radius / len);
+        Vector2 arrow_tip = rl::vector2Lerp(center_start, center_end, 1f - (end_radius / len));
+        Vector2 arrow_base = rl::vector2Lerp(center_start, center_end, (1f - (end_radius / len)) - (ARROW_SIZE / len));
+        rl::drawLineEx(start_pos, arrow_base, thickness, color);
+        draw_arrowhead(arrow_tip, arrow_base, ARROW_SIZE, color);
+    }
+}
+
+fn void draw_dashed_line(Vector2 start, Vector2 end, float thickness, rl::Color color)
+{
+    Vector2 dir_vec = rl::vector2Subtract(end, start);
+    float total_len = rl::vector2Length(dir_vec);
+    if (total_len < 1f) return;
+    Vector2 unit = rl::vector2Scale(dir_vec, 1f / total_len);
+    float t = 0f;
+    while (t < total_len) {
+        float seg_end = t + DASH_LENGTH;
+        if (seg_end > total_len) seg_end = total_len;
+        Vector2 seg_start = rl::vector2Add(start, rl::vector2Scale(unit, t));
+        Vector2 seg_end_pt = rl::vector2Add(start, rl::vector2Scale(unit, seg_end));
+        rl::drawLineEx(seg_start, seg_end_pt, thickness, color);
+        t += DASH_LENGTH + DASH_GAP;
+    }
 }
 
 fn void draw_arrowhead(Vector2 tip, Vector2 base, float size, rl::Color color)
@@ -404,21 +754,14 @@ fn void draw_arrowhead(Vector2 tip, Vector2 base, float size, rl::Color color)
 
 fn void graph(State* state)
 {
+    Topology* topo = state.active_topo();
     List{Node*} queue;
     state.max_layer = 0;
     state.max_node_width = 0;
 
     // initialize
-    foreach(node: state.topo.nodes.tvalues()) {
-        bool include;
-        foreach(toggle : state.toggles) {
-            if (toggle.id == node.sub_topology && toggle.enabled) {
-                include = true;
-                break;
-            }
-        }
-
-        if (!include) {
+    foreach(node: topo.nodes.tvalues()) {
+        if (!state.is_node_visible(node)) {
             node.layer = -2; // invisible
             continue;
         }
@@ -436,12 +779,17 @@ fn void graph(State* state)
         }
 
         node.layer = 0;
-        if (node.kind == SOURCE) {
+        // Only true root nodes (SOURCE nodes with no upstream) seed the BFS
+        if (node.kind == SOURCE && node.upstream.len() == 0) {
             queue.push(node);
         }
     }
 
-    // BFS - Longest path - with cycle breaking
+    // BFS longest-path layering
+    // Note: Kafka topologies can contain cycles (e.g. sub-topo A writes to a topic
+    // that sub-topo B reads, and B writes to a topic that A reads). We cap the layer
+    // to the total node count to guarantee termination.
+    int max_possible_layer = (int)topo.nodes.count;
     while (queue.len() > 0) {
         Node* cur = queue.pop()!!;
 
@@ -450,11 +798,14 @@ fn void graph(State* state)
         }
 
         foreach(dsname: cur.downstream) {
-            Node*? ds = state.topo.nodes.get(dsname);
+            Node*? ds = topo.nodes.get(dsname);
             if (catch ds) continue;
             if (ds.layer == -2) continue;
 
             int potential_layer = cur.layer + 1;
+
+            // Cap layer to prevent infinite loops from topology cycles
+            if (potential_layer > max_possible_layer) continue;
 
             if (potential_layer > ds.layer) {
                 ds.layer = potential_layer;
@@ -467,80 +818,107 @@ fn void graph(State* state)
         }
     }
 
-    // manual cycle layer adjustment start
-    Node*[] all_nodes = state.topo.nodes.tvalues(); 
-    usz max_iter = all_nodes.len * 2;
-    bool changed = true;
-    foreach (node : all_nodes) {
-        if (node.kind != SOURCE && node.layer != -2) {
-            node.layer = -1; // reset
+    // Pull nodes closer to their downstream to minimize long-span edges.
+    // Process from highest layer to lowest: for each node, increase its layer
+    // to min(downstream.layer) - 1 if that is higher than its current layer.
+    // This cascades correctly because downstream nodes are processed first.
+    compact_layers(state);
+    collapse_empty_layers(state);
+}
+
+fn void compact_layers(State* state)
+{
+    Topology* topo = state.active_topo();
+
+    // Collect visible nodes sorted by layer descending (highest first)
+    Nodes all_nodes;
+    all_nodes.tinit();
+    foreach(node: topo.nodes.tvalues()) {
+        if (node.layer >= 0) {
+            all_nodes.push(node);
         }
     }
-    int iter_count = 0;
-    while (changed && iter_count < max_iter) {
-        changed = false;
-        iter_count++;
+    quicksort(&all_nodes, &cmp_layer_desc);
 
-        foreach(node: all_nodes){
-            if (node.layer == -2) continue; // invisible
-            if (node.kind == SOURCE) {
-                if (node.layer != 0) {
-                    node.layer = 0;
-                    changed = true;
-                }
-                continue;
-            }
-            int max_us_layer = -1;
-            foreach(usname: node.upstream) {
-                Node*? us = state.topo.nodes.get(usname);
-                if (catch us) continue;
-                if (us.layer < 0) continue;
-                if (us.layer > max_us_layer) max_us_layer = us.layer;
-            }
-            int required_layer = max_us_layer + 1;
-            if (required_layer > node.layer) {
-                node.layer = required_layer;
-                changed = true;
+    // Single reverse pass: pull each node toward its downstream neighbors
+    foreach(node: all_nodes) {
+        if (node.downstream.len() == 0) continue;
+
+        int min_ds_layer = (int)state.max_layer + 1;
+        foreach(dsname: node.downstream) {
+            Node*? ds = topo.nodes.get(dsname);
+            if (catch ds) continue;
+            if (ds.layer < 0) continue; // invisible
+            if (ds.layer < min_ds_layer) {
+                min_ds_layer = ds.layer;
             }
         }
-    }
-    
-    state.max_layer = 0;
-    // manual cycle layer adjustment end
 
-    foreach(node: state.topo.nodes.tvalues()) {
-        bool is_visible;
-        foreach(toggle: state.toggles) {
-            if (toggle.id == node.sub_topology && toggle.enabled) {
-                is_visible = true;
-                break;
-            }
-        }
-        if (!is_visible) continue;
-        if (node.layer > state.max_layer) {
-            state.max_layer = node.layer;
+        int target = min_ds_layer - 1;
+        if (target > node.layer) {
+            node.layer = target;
         }
     }
 }
 
+fn int cmp_layer_desc(Node* a, Node* b) {
+    if (a.layer > b.layer) return -1;
+    if (a.layer < b.layer) return 1;
+    return 0;
+}
+
+// Remove empty layer gaps by renumbering layers contiguously.
+// E.g. used layers {0, 1, 8, 9, 22, 23} become {0, 1, 2, 3, 4, 5}.
+fn void collapse_empty_layers(State* state)
+{
+    Topology* topo = state.active_topo();
+
+    // Collect the set of used layer numbers
+    List{int} used_layers;
+    used_layers.tinit();
+    foreach(node: topo.nodes.tvalues()) {
+        if (node.layer < 0) continue;
+        // Add only if not already present
+        bool found = false;
+        foreach(l: used_layers) {
+            if (l == node.layer) { found = true; break; }
+        }
+        if (!found) {
+            used_layers.push(node.layer);
+        }
+    }
+
+    if (used_layers.len() == 0) return;
+
+    // Sort ascending
+    quicksort(&used_layers);
+
+    // Remap each node's layer to its index in the sorted unique list
+    foreach(node: topo.nodes.tvalues()) {
+        if (node.layer < 0) continue;
+        foreach(i, l: used_layers) {
+            if (l == node.layer) {
+                node.layer = (int)i;
+                break;
+            }
+        }
+    }
+
+    // Update max_layer
+    state.max_layer = used_layers.len() - 1;
+}
+
 fn NodesByLayer calculate_positions(State* state)
 {
+    Topology* topo = state.active_topo();
     NodesByLayer layers;
     for (int i; i <= state.max_layer; i++) {
             Nodes n;
             n.tinit();
             layers.push(n);
     }
-    foreach(node: state.topo.nodes.tvalues()) {
-
-        bool include;
-        foreach(toggle : state.toggles) {
-            if (toggle.id == node.sub_topology && toggle.enabled) {
-                include = true;
-                break;
-            }
-        }
-        if (!include) continue;
+    foreach(node: topo.nodes.tvalues()) {
+        if (!state.is_node_visible(node)) continue;
         if (node.layer >= 0 && node.layer <= state.max_layer) {
             layers[node.layer].push(node);
         }
@@ -569,7 +947,7 @@ fn NodesByLayer calculate_positions(State* state)
                 float total_y;
                 usz count;
                 foreach(usname: node.upstream) {
-                    Node*? us = state.topo.nodes.get(usname);
+                    Node*? us = topo.nodes.get(usname);
                     if (catch us) continue;
                     if (us.layer == (i - 1)) {
                         total_y += us.y;
